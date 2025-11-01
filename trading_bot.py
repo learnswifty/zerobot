@@ -289,7 +289,7 @@ class TradingBot:
     """Main trading bot with production-ready features"""
 
     def __init__(self, capital: float, leverage: float = 5.0,
-                 exit_strategy: ExitStrategyConfig = None):
+                 exit_strategy: ExitStrategyConfig = None, trade_date: str = None):
 
         # Initialize components
         self.logger = get_logger()
@@ -318,7 +318,7 @@ class TradingBot:
         # Trading state
         self.active_trades: Dict[str, Trade] = {}
         self.monitored_stocks: List[str] = []  # Track all stocks being monitored
-        self.today_date = datetime.now().date().isoformat()
+        self.today_date = trade_date if trade_date else datetime.now().date().isoformat()
         self.daily_trades_count = 0
         self.stock_entry_count = defaultdict(int)
         self.is_running = False
@@ -1138,6 +1138,78 @@ class TradingBot:
         self.shutdown()
 
 
+def get_trading_mode() -> bool:
+    """Ask user for paper trading or live trading mode"""
+    print_header("Trading Mode Selection")
+    print(f"{Colors.BOLD}Choose trading mode:{Colors.ENDC}\n")
+    print(f"  {Colors.OKGREEN}1. Paper Trading{Colors.ENDC} - Simulated orders (SAFE, recommended for testing)")
+    print(f"  {Colors.FAIL}2. Live Trading{Colors.ENDC}  - Real orders with real money (RISK)")
+    print()
+
+    while True:
+        choice = input(f"{Colors.BOLD}Enter choice (1/2) [default: 1]: {Colors.ENDC}").strip()
+
+        if not choice or choice == '1':
+            print_success("Selected: Paper Trading Mode (Safe)")
+            return True  # Paper trading
+        elif choice == '2':
+            print_warning("\n⚠️  WARNING: LIVE TRADING SELECTED!")
+            print_warning("Real money will be used. Real profits and losses will occur.")
+            confirm = input(f"\n{Colors.BOLD}Type 'CONFIRM' to proceed with live trading: {Colors.ENDC}").strip()
+            if confirm == 'CONFIRM':
+                print_error("Selected: Live Trading Mode (Real Money)")
+                return False  # Live trading
+            else:
+                print_info("Live trading not confirmed. Returning to selection...")
+                continue
+        else:
+            print_error("Invalid choice. Please enter 1 or 2.")
+            continue
+
+
+def get_trading_date() -> str:
+    """Get trading date for paper trading (only called in paper mode)"""
+    print_header("Date Selection (Paper Trading)")
+    print(f"{Colors.BOLD}Choose date for paper trading backtest:{Colors.ENDC}\n")
+    print(f"  • Press {Colors.OKGREEN}ENTER{Colors.ENDC} for today's date (live paper trading)")
+    print(f"  • Enter date in {Colors.OKCYAN}YYYY-MM-DD{Colors.ENDC} format (historical backtest)")
+    print(f"\n{Colors.WARNING}Note: Historical dates will fetch past data for backtesting{Colors.ENDC}\n")
+
+    while True:
+        date_input = input(f"{Colors.BOLD}Enter date or press ENTER for today: {Colors.ENDC}").strip()
+
+        if not date_input:
+            # User pressed Enter - use today
+            today = datetime.now().date().isoformat()
+            print_success(f"Selected: Today ({today}) - Live paper trading mode")
+            return today
+        else:
+            # Validate date format
+            try:
+                parsed_date = datetime.strptime(date_input, '%Y-%m-%d')
+                selected_date = parsed_date.date().isoformat()
+
+                # Check if date is in the future
+                if parsed_date.date() > datetime.now().date():
+                    print_error("Cannot select future date. Please choose today or past date.")
+                    continue
+
+                # Check if date is too old (optional - limit to 30 days)
+                days_ago = (datetime.now().date() - parsed_date.date()).days
+                if days_ago > 30:
+                    print_warning(f"Warning: Date is {days_ago} days in the past")
+                    confirm = input("Historical data may be limited. Continue? (y/n): ").strip().lower()
+                    if confirm not in ['y', 'yes']:
+                        continue
+
+                print_success(f"Selected: {selected_date} - Historical paper trading (backtest)")
+                return selected_date
+
+            except ValueError:
+                print_error("Invalid date format. Please use YYYY-MM-DD (e.g., 2025-01-15)")
+                continue
+
+
 def get_margin_input() -> float:
     """Get margin/capital input from user"""
     print_header("Capital Configuration")
@@ -1233,6 +1305,21 @@ def main():
             print_error("Configuration validation failed!")
             sys.exit(1)
 
+        # Step 1: Ask for trading mode (paper or live)
+        is_paper_trading = get_trading_mode()
+
+        # Update config based on user selection
+        TradingConfig.ENABLE_PAPER_TRADING = is_paper_trading
+
+        # Step 2: If paper trading, ask for date. If live, use today
+        trade_date = None
+        if is_paper_trading:
+            trade_date = get_trading_date()
+        else:
+            # Live trading always uses today
+            trade_date = datetime.now().date().isoformat()
+            print_info(f"Live trading date: {trade_date}\n")
+
         # Get user inputs
         capital = get_margin_input()
         leverage = TradingConfig.DEFAULT_LEVERAGE
@@ -1243,20 +1330,21 @@ def main():
 
         # Confirm before starting
         print_header("Configuration Summary")
+        print(f"Trading Mode: {Colors.OKGREEN}Paper Trading{Colors.ENDC}" if is_paper_trading else f"Trading Mode: {Colors.FAIL}LIVE TRADING{Colors.ENDC}")
+        print(f"Trading Date: {trade_date}")
         print(f"Capital: ₹{capital:,.0f}")
         print(f"Leverage: {leverage}x")
         print(f"Buying Power: ₹{capital * leverage:,.0f}")
         print(f"Stocks: {', '.join(stocks)}")
         print(f"Exit Strategy: {exit_strategy}")
-        print(f"Paper Trading: {'Yes' if TradingConfig.ENABLE_PAPER_TRADING else 'No'}")
 
         confirm = input(f"\n{Colors.BOLD}Start trading bot? (yes/no): {Colors.ENDC}").strip().lower()
         if confirm not in ['yes', 'y']:
             print_info("Trading cancelled by user")
             sys.exit(0)
 
-        # Initialize and run bot
-        bot = TradingBot(capital=capital, leverage=leverage, exit_strategy=exit_strategy)
+        # Initialize and run bot with trade_date
+        bot = TradingBot(capital=capital, leverage=leverage, exit_strategy=exit_strategy, trade_date=trade_date)
         bot.run(stocks)
 
     except KeyboardInterrupt:
