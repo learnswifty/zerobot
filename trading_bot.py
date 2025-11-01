@@ -474,10 +474,22 @@ class TradingBot:
             return None
 
     def fetch_historical_data(self, instrument_token: int, days: int = 1) -> Optional[pd.DataFrame]:
-        """Fetch historical data"""
+        """Fetch historical data - uses trade_date for backtests, current time for live"""
         try:
-            to_date = datetime.now()
-            from_date = to_date - timedelta(days=days)
+            # Parse the trade date
+            trade_date = datetime.strptime(self.today_date, '%Y-%m-%d')
+            today = datetime.now().date()
+
+            # For historical backtests, fetch complete day data
+            # For live trading (today), fetch up to current time
+            if trade_date.date() < today:
+                # Historical backtest - fetch full day
+                from_date = trade_date.replace(hour=0, minute=0, second=0)
+                to_date = trade_date.replace(hour=23, minute=59, second=59)
+            else:
+                # Live trading - fetch up to now
+                to_date = datetime.now()
+                from_date = to_date - timedelta(days=days)
 
             data = self.kite.historical_data(
                 instrument_token=instrument_token,
@@ -524,10 +536,80 @@ class TradingBot:
 
         return atr
 
+    def analyze_candle(self, row) -> Dict:
+        """Analyze a single candle and return detailed information"""
+        open_price = row['open']
+        close_price = row['close']
+        high_price = row['high']
+        low_price = row['low']
+
+        # Determine candle color
+        if close_price > open_price:
+            color = 'GREEN'
+            color_symbol = '🟢'
+            body = close_price - open_price
+        elif close_price < open_price:
+            color = 'RED'
+            color_symbol = '🔴'
+            body = open_price - close_price
+        else:
+            color = 'DOJI'
+            color_symbol = '⚪'
+            body = 0
+
+        # Calculate candle metrics
+        total_range = high_price - low_price
+        body_percent = (body / total_range * 100) if total_range > 0 else 0
+
+        # Upper and lower shadows
+        if color == 'GREEN':
+            upper_shadow = high_price - close_price
+            lower_shadow = open_price - low_price
+        elif color == 'RED':
+            upper_shadow = high_price - open_price
+            lower_shadow = close_price - low_price
+        else:  # DOJI
+            upper_shadow = high_price - open_price
+            lower_shadow = open_price - low_price
+
+        return {
+            'time': row['datetime'],
+            'open': open_price,
+            'high': high_price,
+            'low': low_price,
+            'close': close_price,
+            'color': color,
+            'color_symbol': color_symbol,
+            'body': body,
+            'body_percent': body_percent,
+            'upper_shadow': upper_shadow,
+            'lower_shadow': lower_shadow,
+            'total_range': total_range
+        }
+
+    def display_candle_details(self, candle_info: Dict, show_full: bool = False):
+        """Display detailed candle information"""
+        time_str = candle_info['time'].strftime('%H:%M')
+
+        if show_full:
+            # Full detailed display
+            print(f"\n{candle_info['color_symbol']} {time_str} | {candle_info['color']} CANDLE")
+            print(f"   Open:  ₹{candle_info['open']:.2f}")
+            print(f"   High:  ₹{candle_info['high']:.2f}")
+            print(f"   Low:   ₹{candle_info['low']:.2f}")
+            print(f"   Close: ₹{candle_info['close']:.2f}")
+            print(f"   Body:  ₹{candle_info['body']:.2f} ({candle_info['body_percent']:.1f}%)")
+            print(f"   Upper Shadow: ₹{candle_info['upper_shadow']:.2f}")
+            print(f"   Lower Shadow: ₹{candle_info['lower_shadow']:.2f}")
+        else:
+            # Compact display
+            print(f"{candle_info['color_symbol']} {time_str} | O:{candle_info['open']:.2f} H:{candle_info['high']:.2f} L:{candle_info['low']:.2f} C:{candle_info['close']:.2f} | {candle_info['color']}")
+
     def identify_first_red_candle(self, df: pd.DataFrame) -> Optional[Dict]:
         """Identify the first red candle of the day"""
-        today = datetime.now().date()
-        df_today = df[df['datetime'].dt.date == today]
+        # Use the trade date (either selected backtest date or today for live trading)
+        trade_date = datetime.strptime(self.today_date, '%Y-%m-%d').date()
+        df_today = df[df['datetime'].dt.date == trade_date]
 
         for idx, row in df_today.iterrows():
             if row['close'] < row['open']:  # Red candle
@@ -1048,7 +1130,7 @@ class TradingBot:
             self._run_live(symbols)
 
     def _run_backtest(self, symbols: List[str]):
-        """Run backtest on historical date - processes all candles"""
+        """Run backtest on historical date - processes all candles with detailed analysis"""
         trade_date = datetime.strptime(self.today_date, '%Y-%m-%d')
 
         for symbol in symbols:
@@ -1072,15 +1154,46 @@ class TradingBot:
                 if len(df) == 0:
                     continue
 
-                print_success(f"Loaded {len(df)} candles")
+                print_success(f"Loaded {len(df)} candles for {symbol}\n")
+
+                # Display all candles with color analysis
+                print_info("📊 CANDLE ANALYSIS (All 5-minute candles):")
+                print_info("=" * 60)
+
+                red_candles = []
+                green_candles = []
+                doji_candles = []
+
+                for idx, row in df.iterrows():
+                    candle_info = self.analyze_candle(row)
+                    self.display_candle_details(candle_info, show_full=False)
+
+                    # Track candle types
+                    if candle_info['color'] == 'RED':
+                        red_candles.append(candle_info)
+                    elif candle_info['color'] == 'GREEN':
+                        green_candles.append(candle_info)
+                    else:
+                        doji_candles.append(candle_info)
+
+                # Summary
+                print_info("\n" + "=" * 60)
+                print_info(f"📈 CANDLE SUMMARY:")
+                print_success(f"   🟢 Green Candles: {len(green_candles)}")
+                print_error(f"   🔴 Red Candles: {len(red_candles)}")
+                print_info(f"   ⚪ Doji Candles: {len(doji_candles)}")
+                print_info("=" * 60 + "\n")
 
                 # Find first red candle
                 first_red = self.identify_first_red_candle(df)
                 if not first_red:
-                    print_warning("No red candle found")
+                    print_warning("❌ No red candle found - Cannot establish setup")
+                    print_info("   Strategy requires first red candle to set high/low levels\n")
                     continue
 
-                print_success(f"First red at {first_red['time'].strftime('%H:%M')}: High=₹{first_red['high']:.2f}, Low=₹{first_red['low']:.2f}")
+                print_success(f"✅ First red candle found at {first_red['time'].strftime('%H:%M')}")
+                print_success(f"   Setup High: ₹{first_red['high']:.2f}")
+                print_success(f"   Setup Low:  ₹{first_red['low']:.2f}\n")
 
                 setup_high = first_red['high']
                 setup_low = first_red['low']
@@ -1101,7 +1214,10 @@ class TradingBot:
                     # Time exit
                     if current_time.time() >= TradingConfig.FORCE_EXIT_TIME:
                         if active_trade:
+                            print_warning(f"\n⏰ TIME EXIT at {current_time.strftime('%H:%M:%S')}")
+                            print_info(f"   Exit: ₹{current_close:.2f} | Entry: ₹{active_trade.entry_price:.2f}")
                             self.exit_trade(active_trade, current_close, 'TIME_EXIT')
+                            print_info(f"   P&L: ₹{active_trade.pnl:.2f}\n")
                         break
 
                     # Monitor active trade
@@ -1109,12 +1225,18 @@ class TradingBot:
                         active_trade.update_excursions(current_close)
 
                         if self._check_stop_loss(current_close, active_trade):
+                            print_error(f"\n🛑 STOP LOSS HIT at {current_time.strftime('%H:%M:%S')}")
+                            print_info(f"   Exit: ₹{current_close:.2f} | Entry: ₹{active_trade.entry_price:.2f}")
                             self.exit_trade(active_trade, current_close, 'STOP_LOSS')
+                            print_info(f"   P&L: ₹{active_trade.pnl:.2f}\n")
                             active_trade = None
                             continue
 
                         if self.exit_strategy.use_rr and self._check_target(current_close, active_trade):
+                            print_success(f"\n🎯 TARGET HIT at {current_time.strftime('%H:%M:%S')}")
+                            print_info(f"   Exit: ₹{current_close:.2f} | Entry: ₹{active_trade.entry_price:.2f}")
                             self.exit_trade(active_trade, current_close, 'TARGET')
+                            print_success(f"   P&L: ₹{active_trade.pnl:.2f}\n")
                             active_trade = None
                             continue
 
@@ -1124,21 +1246,34 @@ class TradingBot:
                             if active_trade.stop_loss != old_sl:
                                 self.db.update_trade(active_trade.trade_id, {'stop_loss': active_trade.stop_loss})
 
-                    # Check entries
-                    if not active_trade and self.can_enter_stock(symbol):
+                    # Check entries (only if haven't reached max)
+                    if not active_trade and self.stock_entry_count[symbol] < TradingConfig.MAX_ENTRIES_PER_STOCK:
                         if current_close > setup_high:
                             quantity = self.calculate_position_size(current_close)
                             if quantity > 0:
+                                print_success(f"\n🔵 LONG ENTRY SIGNAL at {current_time.strftime('%H:%M:%S')}")
+                                print_info(f"   Entry: ₹{current_close:.2f} | SL: ₹{setup_low:.2f} | Qty: {quantity}")
                                 active_trade = self.enter_trade(symbol, 'LONG', current_close, setup_low, quantity)
+                                if active_trade:
+                                    print_success(f"   ✅ Trade opened successfully\n")
 
                         elif current_close < setup_low:
                             quantity = self.calculate_position_size(current_close)
                             if quantity > 0:
+                                print_success(f"\n🔴 SHORT ENTRY SIGNAL at {current_time.strftime('%H:%M:%S')}")
+                                print_info(f"   Entry: ₹{current_close:.2f} | SL: ₹{setup_high:.2f} | Qty: {quantity}")
                                 active_trade = self.enter_trade(symbol, 'SHORT', current_close, setup_high, quantity)
+                                if active_trade:
+                                    print_success(f"   ✅ Trade opened successfully\n")
 
                 # EOD exit
                 if active_trade:
-                    self.exit_trade(active_trade, df.iloc[-1]['close'], 'EOD_EXIT')
+                    eod_time = df.iloc[-1]['datetime']
+                    eod_close = df.iloc[-1]['close']
+                    print_warning(f"\n📅 END OF DAY EXIT at {eod_time.strftime('%H:%M:%S')}")
+                    print_info(f"   Exit: ₹{eod_close:.2f} | Entry: ₹{active_trade.entry_price:.2f}")
+                    self.exit_trade(active_trade, eod_close, 'EOD_EXIT')
+                    print_info(f"   P&L: ₹{active_trade.pnl:.2f}\n")
 
             except Exception as e:
                 print_error(f"Error: {str(e)}")
