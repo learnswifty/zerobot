@@ -595,8 +595,9 @@ class TradingBot:
 
     def identify_first_red_candle(self, df: pd.DataFrame) -> Optional[Dict]:
         """Identify the first red candle of the day"""
-        today = datetime.now().date()
-        df_today = df[df['datetime'].dt.date == today]
+        # Use the trade date (either selected backtest date or today for live trading)
+        trade_date = datetime.strptime(self.today_date, '%Y-%m-%d').date()
+        df_today = df[df['datetime'].dt.date == trade_date]
 
         for idx, row in df_today.iterrows():
             if row['close'] < row['open']:  # Red candle
