@@ -1214,7 +1214,10 @@ class TradingBot:
                     # Time exit
                     if current_time.time() >= TradingConfig.FORCE_EXIT_TIME:
                         if active_trade:
+                            print_warning(f"\n⏰ TIME EXIT at {current_time.strftime('%H:%M:%S')}")
+                            print_info(f"   Exit: ₹{current_close:.2f} | Entry: ₹{active_trade.entry_price:.2f}")
                             self.exit_trade(active_trade, current_close, 'TIME_EXIT')
+                            print_info(f"   P&L: ₹{active_trade.pnl:.2f}\n")
                         break
 
                     # Monitor active trade
@@ -1222,12 +1225,18 @@ class TradingBot:
                         active_trade.update_excursions(current_close)
 
                         if self._check_stop_loss(current_close, active_trade):
+                            print_error(f"\n🛑 STOP LOSS HIT at {current_time.strftime('%H:%M:%S')}")
+                            print_info(f"   Exit: ₹{current_close:.2f} | Entry: ₹{active_trade.entry_price:.2f}")
                             self.exit_trade(active_trade, current_close, 'STOP_LOSS')
+                            print_info(f"   P&L: ₹{active_trade.pnl:.2f}\n")
                             active_trade = None
                             continue
 
                         if self.exit_strategy.use_rr and self._check_target(current_close, active_trade):
+                            print_success(f"\n🎯 TARGET HIT at {current_time.strftime('%H:%M:%S')}")
+                            print_info(f"   Exit: ₹{current_close:.2f} | Entry: ₹{active_trade.entry_price:.2f}")
                             self.exit_trade(active_trade, current_close, 'TARGET')
+                            print_success(f"   P&L: ₹{active_trade.pnl:.2f}\n")
                             active_trade = None
                             continue
 
@@ -1237,21 +1246,34 @@ class TradingBot:
                             if active_trade.stop_loss != old_sl:
                                 self.db.update_trade(active_trade.trade_id, {'stop_loss': active_trade.stop_loss})
 
-                    # Check entries
-                    if not active_trade and self.can_enter_stock(symbol):
+                    # Check entries (only if haven't reached max)
+                    if not active_trade and self.stock_entry_count[symbol] < TradingConfig.MAX_ENTRIES_PER_STOCK:
                         if current_close > setup_high:
                             quantity = self.calculate_position_size(current_close)
                             if quantity > 0:
+                                print_success(f"\n🔵 LONG ENTRY SIGNAL at {current_time.strftime('%H:%M:%S')}")
+                                print_info(f"   Entry: ₹{current_close:.2f} | SL: ₹{setup_low:.2f} | Qty: {quantity}")
                                 active_trade = self.enter_trade(symbol, 'LONG', current_close, setup_low, quantity)
+                                if active_trade:
+                                    print_success(f"   ✅ Trade opened successfully\n")
 
                         elif current_close < setup_low:
                             quantity = self.calculate_position_size(current_close)
                             if quantity > 0:
+                                print_success(f"\n🔴 SHORT ENTRY SIGNAL at {current_time.strftime('%H:%M:%S')}")
+                                print_info(f"   Entry: ₹{current_close:.2f} | SL: ₹{setup_high:.2f} | Qty: {quantity}")
                                 active_trade = self.enter_trade(symbol, 'SHORT', current_close, setup_high, quantity)
+                                if active_trade:
+                                    print_success(f"   ✅ Trade opened successfully\n")
 
                 # EOD exit
                 if active_trade:
-                    self.exit_trade(active_trade, df.iloc[-1]['close'], 'EOD_EXIT')
+                    eod_time = df.iloc[-1]['datetime']
+                    eod_close = df.iloc[-1]['close']
+                    print_warning(f"\n📅 END OF DAY EXIT at {eod_time.strftime('%H:%M:%S')}")
+                    print_info(f"   Exit: ₹{eod_close:.2f} | Entry: ₹{active_trade.entry_price:.2f}")
+                    self.exit_trade(active_trade, eod_close, 'EOD_EXIT')
+                    print_info(f"   P&L: ₹{active_trade.pnl:.2f}\n")
 
             except Exception as e:
                 print_error(f"Error: {str(e)}")
