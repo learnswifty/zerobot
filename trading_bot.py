@@ -121,6 +121,16 @@ class OrderManager:
         # Simulate orders in paper trading mode
         if self.paper_mode:
             order_id = f"PAPER-{int(time.time() * 1000)}"
+            # For paper trading, use the provided price or fetch current LTP
+            actual_price = price
+            if actual_price is None and order_type == 'MARKET':
+                # For market orders in paper mode, we need to fetch current price
+                try:
+                    quote = self.kite.quote(f"{TradingConfig.DEFAULT_EXCHANGE}:{symbol}")
+                    actual_price = quote[f"{TradingConfig.DEFAULT_EXCHANGE}:{symbol}"]['last_price']
+                except:
+                    actual_price = 0.0  # Fallback
+
             self._paper_orders[order_id] = {
                 'order_id': order_id,
                 'status': 'COMPLETE',
@@ -128,10 +138,12 @@ class OrderManager:
                 'transaction_type': transaction_type,
                 'quantity': quantity,
                 'order_type': order_type,
-                'price': price,
-                'trigger_price': trigger_price
+                'price': actual_price,
+                'trigger_price': trigger_price,
+                'average_price': actual_price  # Add average price for consistency
             }
-            self.logger.info(f"[PAPER] Simulated order {order_id} | {symbol} | {transaction_type} {quantity} @ {'₹{:.2f}'.format(price) if price else 'Market'}")
+            price_str = f"₹{actual_price:.2f}" if actual_price else "Market"
+            self.logger.info(f"[PAPER] Simulated order {order_id} | {symbol} | {transaction_type} {quantity} @ {price_str}")
             return order_id
 
         for attempt in range(self.retry_count):
@@ -247,7 +259,7 @@ class CircuitBreaker:
             return True
 
         # Check absolute loss threshold
-        if current_loss >= abs(TradingConfig.CIRCUIT_BREAKER_LOSS_THRESHOLD):
+        if current_loss >= TradingConfig.CIRCUIT_BREAKER_LOSS_THRESHOLD:
             self.trigger("Absolute loss threshold exceeded", current_loss)
             return True
 
@@ -531,8 +543,25 @@ class TradingBot:
 
     def calculate_position_size(self, price: float) -> int:
         """Calculate position size based on buying power"""
+        # Validate price
+        if price <= 0:
+            self.logger.error(f"Invalid price for position sizing: {price}")
+            return 0
+
+        # Calculate maximum affordable quantity
         max_quantity = int(self.buying_power / price)
-        return max(TradingConfig.MIN_POSITION_SIZE, max_quantity)
+
+        # Ensure minimum position size
+        if max_quantity < TradingConfig.MIN_POSITION_SIZE:
+            self.logger.warning(f"Insufficient buying power. Need ₹{price * TradingConfig.MIN_POSITION_SIZE:.2f}, have ₹{self.buying_power:.2f}")
+            return 0
+
+        # Apply maximum position size limit if configured
+        max_allowed = getattr(TradingConfig, 'MAX_POSITION_SIZE', None)
+        if max_allowed and max_quantity > max_allowed:
+            max_quantity = max_allowed
+
+        return max_quantity
 
     def calculate_target_price(self, entry_price: float, stop_loss: float,
                               direction: str) -> float:
@@ -549,6 +578,36 @@ class TradingBot:
                    stop_loss: float, quantity: int) -> Optional[Trade]:
         """Enter a new trade"""
 
+        # Validate inputs
+        if quantity <= 0:
+            self.logger.error(f"Invalid quantity {quantity} for {symbol}")
+            return None
+
+        if entry_price <= 0:
+            self.logger.error(f"Invalid entry price {entry_price} for {symbol}")
+            return None
+
+        # Validate stop loss placement
+        if direction == 'LONG':
+            if stop_loss >= entry_price:
+                self.logger.error(f"Invalid SL for LONG: SL {stop_loss} must be < Entry {entry_price}")
+                return None
+            sl_percent = ((entry_price - stop_loss) / entry_price) * 100
+        else:  # SHORT
+            if stop_loss <= entry_price:
+                self.logger.error(f"Invalid SL for SHORT: SL {stop_loss} must be > Entry {entry_price}")
+                return None
+            sl_percent = ((stop_loss - entry_price) / entry_price) * 100
+
+        # Validate stop loss percentage
+        if sl_percent < TradingConfig.MIN_STOP_LOSS_PERCENT:
+            self.logger.error(f"Stop loss too tight: {sl_percent:.2f}% < {TradingConfig.MIN_STOP_LOSS_PERCENT}%")
+            return None
+
+        if sl_percent > TradingConfig.MAX_STOP_LOSS_PERCENT:
+            self.logger.error(f"Stop loss too wide: {sl_percent:.2f}% > {TradingConfig.MAX_STOP_LOSS_PERCENT}%")
+            return None
+
         # Calculate target if using RR
         target_price = None
         if self.exit_strategy.use_rr:
@@ -557,12 +616,12 @@ class TradingBot:
         # Place entry order
         transaction_type = 'BUY' if direction == 'LONG' else 'SELL'
 
-        if TradingConfig.REQUIRE_ORDER_CONFIRMATION:
+        if TradingConfig.REQUIRE_ORDER_CONFIRMATION and not TradingConfig.ENABLE_PAPER_TRADING:
             print_warning(f"\n{'=' * 60}")
             print_warning(f"ORDER CONFIRMATION REQUIRED")
             print_warning(f"Symbol: {symbol} | Direction: {direction}")
             print_warning(f"Quantity: {quantity} | Price: ₹{entry_price:.2f}")
-            print_warning(f"Stop Loss: ₹{stop_loss:.2f} | Target: ₹{target_price:.2f if target_price else 'N/A'}")
+            print_warning(f"Stop Loss: ₹{stop_loss:.2f} ({sl_percent:.2f}%) | Target: ₹{target_price:.2f if target_price else 'N/A'}")
             print_warning(f"{'=' * 60}")
 
             confirm = input(f"{Colors.BOLD}Confirm order? (yes/no): {Colors.ENDC}").strip().lower()
@@ -570,7 +629,7 @@ class TradingBot:
                 print_info("Order cancelled by user")
                 return None
 
-        order_id = self.order_manager.place_order(symbol, transaction_type, quantity)
+        order_id = self.order_manager.place_order(symbol, transaction_type, quantity, price=entry_price)
 
         if not order_id:
             self.logger.error(f"Failed to place entry order for {symbol}")
@@ -620,19 +679,25 @@ class TradingBot:
 
         return trade
 
-    def exit_trade(self, trade: Trade, exit_price: float, reason: str):
-        """Exit a trade"""
+    def exit_trade(self, trade: Trade, exit_price: float, reason: str) -> bool:
+        """Exit a trade and return success status"""
 
         # Place exit order
         transaction_type = 'SELL' if trade.direction == 'LONG' else 'BUY'
-        order_id = self.order_manager.place_order(trade.symbol, transaction_type, trade.quantity)
+        order_id = self.order_manager.place_order(trade.symbol, transaction_type, trade.quantity, price=exit_price)
 
         if not order_id:
             self.logger.error(f"Failed to place exit order for {trade.symbol}")
-            return
+            return False
 
         # Wait for order completion
-        self.order_manager.wait_for_order_completion(order_id)
+        order_success = self.order_manager.wait_for_order_completion(order_id)
+
+        if not order_success:
+            self.logger.error(f"Exit order for {trade.symbol} did not complete successfully")
+            # Try to cancel the order
+            self.order_manager.cancel_order(order_id)
+            return False
 
         # Close trade
         trade.close_trade(datetime.now(), exit_price, reason)
@@ -649,8 +714,9 @@ class TradingBot:
             order_id
         )
 
-        # Update capital
+        # Update capital AND buying power
         self.current_capital += trade.pnl
+        self.buying_power = self.current_capital * self.leverage
 
         # Remove from active trades
         if trade.symbol in self.active_trades:
@@ -661,8 +727,10 @@ class TradingBot:
                               trade.entry_price, trade.exit_price,
                               trade.pnl, reason)
 
+        return True
+
     def monitor_active_trades(self):
-        """Monitor and manage active trades"""
+        """Monitor and manage active trades with robust error handling"""
 
         if not self.active_trades:
             return
@@ -670,13 +738,34 @@ class TradingBot:
         # Get quotes for all active stocks
         symbols = list(self.active_trades.keys())
 
-        try:
-            quotes = self.kite.quote([f"{TradingConfig.DEFAULT_EXCHANGE}:{s}" for s in symbols])
+        # Retry logic for quote fetching
+        max_retries = 3
+        retry_count = 0
+        quotes = None
 
-            for symbol, trade in list(self.active_trades.items()):
+        while retry_count < max_retries and quotes is None:
+            try:
+                quotes = self.kite.quote([f"{TradingConfig.DEFAULT_EXCHANGE}:{s}" for s in symbols])
+                break
+            except Exception as e:
+                retry_count += 1
+                if retry_count < max_retries:
+                    self.logger.warning(f"Error fetching quotes (attempt {retry_count}/{max_retries}): {str(e)}")
+                    time.sleep(1)  # Wait before retry
+                else:
+                    self.logger.error(f"Failed to fetch quotes after {max_retries} attempts: {str(e)}")
+                    return
+
+        if not quotes:
+            self.logger.error("No quotes available for monitoring")
+            return
+
+        for symbol, trade in list(self.active_trades.items()):
+            try:
                 quote_key = f"{TradingConfig.DEFAULT_EXCHANGE}:{symbol}"
 
                 if quote_key not in quotes:
+                    self.logger.warning(f"Quote not available for {symbol}, skipping this iteration")
                     continue
 
                 quote = quotes[quote_key]
@@ -687,23 +776,31 @@ class TradingBot:
 
                 # Check stop loss
                 if self._check_stop_loss(ltp, trade):
-                    self.exit_trade(trade, ltp, 'STOP_LOSS')
+                    exit_success = self.exit_trade(trade, ltp, 'STOP_LOSS')
+                    if not exit_success:
+                        self.logger.error(f"Failed to exit {symbol} at stop loss, will retry next iteration")
                     continue
 
                 # Check target
                 if self.exit_strategy.use_rr and self._check_target(ltp, trade):
-                    self.exit_trade(trade, ltp, 'TARGET')
+                    exit_success = self.exit_trade(trade, ltp, 'TARGET')
+                    if not exit_success:
+                        self.logger.error(f"Failed to exit {symbol} at target, will retry next iteration")
                     continue
 
                 # Update trailing stop
                 if self.exit_strategy.use_trailing_sl:
+                    old_sl = trade.stop_loss
                     trade.update_trailing_stop(ltp, self.exit_strategy.trailing_sl_percent)
 
-                    # Update database with new stop loss
-                    self.db.update_trade(trade.trade_id, {'stop_loss': trade.stop_loss})
+                    # Only update database if stop loss actually changed
+                    if trade.stop_loss != old_sl:
+                        self.db.update_trade(trade.trade_id, {'stop_loss': trade.stop_loss})
+                        self.logger.info(f"{symbol} trailing SL updated: ₹{old_sl:.2f} -> ₹{trade.stop_loss:.2f}")
 
-        except Exception as e:
-            self.logger.error(f"Error monitoring trades: {str(e)}")
+            except Exception as e:
+                self.logger.error(f"Error monitoring {symbol}: {str(e)}")
+                continue
 
     def _check_stop_loss(self, current_price: float, trade: Trade) -> bool:
         """Check if stop loss is hit"""
@@ -723,8 +820,10 @@ class TradingBot:
             return current_price <= trade.target_price
 
     def force_exit_all_positions(self, reason: str = "FORCE_EXIT"):
-        """Force exit all open positions"""
+        """Force exit all open positions with proper cleanup"""
         self.logger.warning(f"Force exiting all positions: {reason}")
+
+        failed_exits = []
 
         for symbol, trade in list(self.active_trades.items()):
             try:
@@ -732,12 +831,30 @@ class TradingBot:
                 quote = self.kite.quote(f"{TradingConfig.DEFAULT_EXCHANGE}:{symbol}")
                 ltp = quote[f"{TradingConfig.DEFAULT_EXCHANGE}:{symbol}"]['last_price']
 
-                self.exit_trade(trade, ltp, reason)
+                exit_success = self.exit_trade(trade, ltp, reason)
+
+                if not exit_success:
+                    failed_exits.append(symbol)
+                    self.logger.error(f"Failed to exit {symbol}, removing from active trades anyway")
+                    # Force remove from active trades to prevent orphaned positions
+                    if symbol in self.active_trades:
+                        del self.active_trades[symbol]
+
             except Exception as e:
                 self.logger.error(f"Error force exiting {symbol}: {str(e)}")
+                failed_exits.append(symbol)
+                # Force remove from active trades
+                if symbol in self.active_trades:
+                    del self.active_trades[symbol]
+
+        if failed_exits:
+            self.logger.critical(f"Failed to exit positions: {', '.join(failed_exits)}")
+            self.logger.critical("MANUAL INTERVENTION REQUIRED - Check broker terminal for actual positions!")
+        else:
+            self.logger.info(f"Successfully exited all {len(list(self.active_trades.keys()))} positions")
 
     def generate_daily_summary(self):
-        """Generate and save daily summary"""
+        """Generate and save daily summary with drawdown calculation"""
         trades = self.db.get_trades_by_date(self.today_date)
 
         if not trades:
@@ -768,6 +885,9 @@ class TradingBot:
         largest_loss = min(losses) if losses else 0
         profit_factor = abs(sum(wins) / sum(losses)) if losses and sum(losses) != 0 else 0
 
+        # Calculate maximum drawdown
+        max_drawdown = self._calculate_max_drawdown(closed_trades)
+
         # Save summary
         summary = {
             'trade_date': self.today_date,
@@ -784,12 +904,41 @@ class TradingBot:
             'profit_factor': profit_factor,
             'starting_capital': self.initial_capital,
             'ending_capital': self.current_capital,
-            'max_drawdown': 0  # TODO: Implement drawdown calculation
+            'max_drawdown': max_drawdown
         }
 
         self.db.save_daily_summary(summary)
-        self.logger.daily_summary(total_trades, winning_trades, losing_trades, 
+        self.logger.daily_summary(total_trades, winning_trades, losing_trades,
                                  total_pnl, win_rate)
+
+    def _calculate_max_drawdown(self, closed_trades: List[Dict]) -> float:
+        """Calculate maximum drawdown from closed trades"""
+        if not closed_trades:
+            return 0.0
+
+        # Sort trades by exit time
+        sorted_trades = sorted(closed_trades, key=lambda t: t['exit_time'])
+
+        # Calculate cumulative P&L curve
+        running_capital = self.initial_capital
+        peak_capital = running_capital
+        max_drawdown = 0.0
+
+        for trade in sorted_trades:
+            running_capital += trade['pnl']
+
+            # Update peak
+            if running_capital > peak_capital:
+                peak_capital = running_capital
+
+            # Calculate drawdown from peak
+            drawdown = peak_capital - running_capital
+
+            # Update max drawdown
+            if drawdown > max_drawdown:
+                max_drawdown = drawdown
+
+        return max_drawdown
 
     def _show_status(self):
         """Show current bot status"""
@@ -914,9 +1063,66 @@ class TradingBot:
                         if not self.can_enter_stock(symbol):
                             continue
 
-                        # TODO: Implement entry logic
-                        # This would check for first red candle breakout
-                        pass
+                        # Implement entry logic - First Red Candle Breakout Strategy
+                        try:
+                            # Get instrument token
+                            instrument_token = self.get_instrument_token(symbol)
+                            if not instrument_token:
+                                continue
+
+                            # Fetch today's historical data
+                            df = self.fetch_historical_data(instrument_token, days=1)
+                            if df is None or len(df) < 2:
+                                continue
+
+                            # Check if we've identified first red candle today
+                            first_red = self.identify_first_red_candle(df)
+                            if not first_red:
+                                continue
+
+                            # Get current candle (latest data)
+                            latest_candle = df.iloc[-1]
+                            current_close = latest_candle['close']
+                            current_high = latest_candle['high']
+                            current_low = latest_candle['low']
+
+                            # First red candle levels
+                            setup_high = first_red['high']
+                            setup_low = first_red['low']
+
+                            # Check for LONG breakout signal
+                            if current_close > setup_high:
+                                # Entry triggered - LONG
+                                entry_price = current_close
+                                stop_loss = setup_low
+                                quantity = self.calculate_position_size(entry_price)
+
+                                if quantity > 0:
+                                    self.logger.info(f"LONG signal for {symbol} @ ₹{entry_price:.2f}")
+                                    trade = self.enter_trade(symbol, 'LONG', entry_price, stop_loss, quantity)
+                                    if trade:
+                                        self.logger.info(f"Entered LONG position in {symbol}")
+                                    else:
+                                        self.logger.warning(f"Failed to enter LONG position in {symbol}")
+
+                            # Check for SHORT breakout signal
+                            elif current_close < setup_low:
+                                # Entry triggered - SHORT
+                                entry_price = current_close
+                                stop_loss = setup_high
+                                quantity = self.calculate_position_size(entry_price)
+
+                                if quantity > 0:
+                                    self.logger.info(f"SHORT signal for {symbol} @ ₹{entry_price:.2f}")
+                                    trade = self.enter_trade(symbol, 'SHORT', entry_price, stop_loss, quantity)
+                                    if trade:
+                                        self.logger.info(f"Entered SHORT position in {symbol}")
+                                    else:
+                                        self.logger.warning(f"Failed to enter SHORT position in {symbol}")
+
+                        except Exception as e:
+                            self.logger.error(f"Error checking entry for {symbol}: {str(e)}")
+                            continue
 
                 # Sleep before next iteration
                 time.sleep(TradingConfig.QUOTE_UPDATE_INTERVAL)

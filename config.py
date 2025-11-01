@@ -66,7 +66,7 @@ class TradingConfig:
     ORDER_PRODUCT_TYPE = 'MIS'       # MIS (intraday) or CNC (delivery)
     ORDER_VALIDITY = 'DAY'           # DAY or IOC
 
-    # Slippage estimation
+    # Slippage estimation (currently not used in code, reserved for future)
     EXPECTED_SLIPPAGE_PERCENT = 0.05 # Expected slippage %
 
     # Order timeout
@@ -74,17 +74,17 @@ class TradingConfig:
     ORDER_STATUS_CHECK_INTERVAL = 2  # Check order status every N seconds
 
     # ==================== SAFETY SETTINGS ====================
-    ENABLE_PAPER_TRADING = True     # True = Paper trading, False = Live
-    REQUIRE_ORDER_CONFIRMATION = True # Ask user before placing orders
+    ENABLE_PAPER_TRADING = True      # True = Paper trading, False = Live trading
+    REQUIRE_ORDER_CONFIRMATION = False # Ask user before placing orders (disable for automated trading)
 
-    # Circuit breaker
+    # Circuit breaker - Automatic trading halt on excessive losses
     ENABLE_CIRCUIT_BREAKER = True
-    CIRCUIT_BREAKER_LOSS_THRESHOLD = -1500  # Stop if loss exceeds this
-    CIRCUIT_BREAKER_CONSECUTIVE_LOSSES = 5   # Stop after N consecutive losses
+    CIRCUIT_BREAKER_LOSS_THRESHOLD = 1500  # Stop if loss exceeds ₹1500 (positive number)
+    CIRCUIT_BREAKER_CONSECUTIVE_LOSSES = 5  # Stop after N consecutive losses
 
-    # Emergency stop
-    EMERGENCY_STOP_ENABLED = True
-    EMERGENCY_STOP_HOTKEY = '0000' # Not implemented yet
+    # Emergency stop (Feature not implemented yet)
+    EMERGENCY_STOP_ENABLED = False
+    EMERGENCY_STOP_HOTKEY = '0000'  # Reserved for future implementation
 
     # ==================== MONITORING & ALERTS ====================
     ENABLE_LOGGING = True
@@ -110,11 +110,11 @@ class TradingConfig:
 
     # ==================== ADVANCED FEATURES ====================
     ENABLE_TRAILING_STOP = True
-    ENABLE_PARTIAL_EXITS = False     # Not implemented yet
-    ENABLE_POSITION_SCALING = False  # Not implemented yet
+    ENABLE_PARTIAL_EXITS = False     # Feature reserved for future implementation
+    ENABLE_POSITION_SCALING = False  # Feature reserved for future implementation
 
-    # Websocket for real-time data
-    USE_WEBSOCKET = False            # Not implemented yet
+    # Websocket for real-time data (Feature reserved for future implementation)
+    USE_WEBSOCKET = False
 
     @classmethod
     def to_dict(cls) -> Dict[str, Any]:
