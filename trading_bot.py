@@ -1367,6 +1367,7 @@ class TradingBot:
                             print_info(f"   Exit: ₹{current_close:.2f} | Entry: ₹{active_trade.entry_price:.2f}")
                             self.exit_trade(active_trade, current_close, 'TIME_EXIT')
                             print_info(f"   P&L: ₹{active_trade.pnl:.2f}\n")
+                            active_trade = None  # Clear the trade after exit
                         break
 
                     # Monitor active trade
