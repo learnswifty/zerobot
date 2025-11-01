@@ -294,6 +294,7 @@ class TradingBot:
         # Initialize components
         self.logger = get_logger()
         self.db = TradingDatabase(TradingConfig.DB_PATH)
+        self.logger.info(f"📊 Database initialized: {TradingConfig.DB_PATH}")
 
         # Trading parameters
         self.initial_capital = capital
@@ -748,7 +749,15 @@ class TradingBot:
             'status': 'OPEN',
             'order_id_entry': order_id
         }
-        trade.trade_id = self.db.save_trade(trade_data)
+        try:
+            trade.trade_id = self.db.save_trade(trade_data)
+            self.logger.debug(f"✓ Trade saved to database with ID: {trade.trade_id}")
+        except Exception as e:
+            self.logger.error(f"❌ Failed to save trade to database: {str(e)}")
+            import traceback
+            self.logger.error(traceback.format_exc())
+            # Continue anyway - don't fail the trade
+            trade.trade_id = None
 
         # Update state
         self.active_trades[symbol] = trade
@@ -786,15 +795,21 @@ class TradingBot:
         trade.order_id_exit = order_id
 
         # Update database
-        self.db.close_trade(
-            trade.trade_id,
-            trade.exit_time,
-            trade.exit_price,
-            trade.exit_reason,
-            trade.pnl,
-            trade.pnl_percent,
-            order_id
-        )
+        try:
+            self.db.close_trade(
+                trade.trade_id,
+                trade.exit_time,
+                trade.exit_price,
+                trade.exit_reason,
+                trade.pnl,
+                trade.pnl_percent,
+                order_id
+            )
+            self.logger.debug(f"✓ Trade {trade.trade_id} closed in database")
+        except Exception as e:
+            self.logger.error(f"❌ Failed to close trade in database: {str(e)}")
+            import traceback
+            self.logger.error(traceback.format_exc())
 
         # Update capital AND buying power
         self.current_capital += trade.pnl
@@ -939,11 +954,14 @@ class TradingBot:
         """Generate and save daily summary with drawdown calculation"""
         trades = self.db.get_trades_by_date(self.today_date)
 
+        self.logger.debug(f"📊 Summary check: Found {len(trades) if trades else 0} trades in database for {self.today_date}")
+
         if not trades:
             self.logger.info("No trades today")
             return
 
         closed_trades = [t for t in trades if t['status'] == 'CLOSED']
+        self.logger.debug(f"📊 Of which {len(closed_trades)} are closed")
 
         if not closed_trades:
             self.logger.info("No closed trades today")
