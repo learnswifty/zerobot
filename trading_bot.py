@@ -474,10 +474,22 @@ class TradingBot:
             return None
 
     def fetch_historical_data(self, instrument_token: int, days: int = 1) -> Optional[pd.DataFrame]:
-        """Fetch historical data"""
+        """Fetch historical data - uses trade_date for backtests, current time for live"""
         try:
-            to_date = datetime.now()
-            from_date = to_date - timedelta(days=days)
+            # Parse the trade date
+            trade_date = datetime.strptime(self.today_date, '%Y-%m-%d')
+            today = datetime.now().date()
+
+            # For historical backtests, fetch complete day data
+            # For live trading (today), fetch up to current time
+            if trade_date.date() < today:
+                # Historical backtest - fetch full day
+                from_date = trade_date.replace(hour=0, minute=0, second=0)
+                to_date = trade_date.replace(hour=23, minute=59, second=59)
+            else:
+                # Live trading - fetch up to now
+                to_date = datetime.now()
+                from_date = to_date - timedelta(days=days)
 
             data = self.kite.historical_data(
                 instrument_token=instrument_token,
