@@ -26,6 +26,8 @@ class TradingDatabase:
         """Context manager for database connection"""
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row  # Enable column access by name
+        # Ensure proper type detection
+        conn.text_factory = str
         try:
             yield conn
             conn.commit()
@@ -34,6 +36,52 @@ class TradingDatabase:
             raise e
         finally:
             conn.close()
+
+    def _row_to_dict(self, row) -> Dict:
+        """Convert SQLite row to dictionary with proper type handling"""
+        if row is None:
+            return None
+
+        data = dict(row)
+
+        # Ensure numeric fields are properly typed
+        numeric_fields = ['pnl', 'pnl_percent', 'entry_price', 'exit_price',
+                         'stop_loss', 'initial_stop_loss', 'target_price',
+                         'max_favorable_excursion', 'max_adverse_excursion',
+                         'total_pnl', 'win_rate', 'avg_win', 'avg_loss',
+                         'largest_win', 'largest_loss', 'profit_factor',
+                         'starting_capital', 'ending_capital', 'max_drawdown']
+
+        for field in numeric_fields:
+            if field in data and data[field] is not None:
+                try:
+                    # Convert bytes or string to float
+                    if isinstance(data[field], bytes):
+                        data[field] = float(data[field].decode('utf-8'))
+                    elif isinstance(data[field], str):
+                        data[field] = float(data[field])
+                    else:
+                        data[field] = float(data[field])
+                except (ValueError, AttributeError):
+                    data[field] = 0.0
+
+        # Ensure integer fields are properly typed
+        integer_fields = ['quantity', 'total_trades', 'winning_trades',
+                         'losing_trades', 'breakeven_trades']
+
+        for field in integer_fields:
+            if field in data and data[field] is not None:
+                try:
+                    if isinstance(data[field], bytes):
+                        data[field] = int(data[field].decode('utf-8'))
+                    elif isinstance(data[field], str):
+                        data[field] = int(data[field])
+                    else:
+                        data[field] = int(data[field])
+                except (ValueError, AttributeError):
+                    data[field] = 0
+
+        return data
 
     def init_database(self):
         """Initialize database tables"""
@@ -202,18 +250,18 @@ class TradingDatabase:
 
             if symbol:
                 cursor.execute('''
-                    SELECT * FROM trades 
+                    SELECT * FROM trades
                     WHERE status = 'OPEN' AND symbol = ?
                     ORDER BY entry_time DESC
                 ''', (symbol,))
             else:
                 cursor.execute('''
-                    SELECT * FROM trades 
+                    SELECT * FROM trades
                     WHERE status = 'OPEN'
                     ORDER BY entry_time DESC
                 ''')
 
-            return [dict(row) for row in cursor.fetchall()]
+            return [self._row_to_dict(row) for row in cursor.fetchall()]
 
     def get_trades_by_date(self, trade_date: str) -> List[Dict]:
         """Get all trades for a specific date"""
@@ -221,12 +269,12 @@ class TradingDatabase:
             cursor = conn.cursor()
 
             cursor.execute('''
-                SELECT * FROM trades 
+                SELECT * FROM trades
                 WHERE trade_date = ?
                 ORDER BY entry_time
             ''', (trade_date,))
 
-            return [dict(row) for row in cursor.fetchall()]
+            return [self._row_to_dict(row) for row in cursor.fetchall()]
 
     def get_trade_count_for_stock(self, symbol: str, trade_date: str) -> int:
         """Get number of trades for a stock on a specific date"""
@@ -292,12 +340,12 @@ class TradingDatabase:
             cursor = conn.cursor()
 
             cursor.execute('''
-                SELECT * FROM daily_summary 
+                SELECT * FROM daily_summary
                 WHERE trade_date = ?
             ''', (trade_date,))
 
             result = cursor.fetchone()
-            return dict(result) if result else None
+            return self._row_to_dict(result) if result else None
 
     def get_performance_stats(self, days: int = 30) -> Dict:
         """Get performance statistics for last N days"""
@@ -323,7 +371,7 @@ class TradingDatabase:
             result = cursor.fetchone()
 
             if result and result['total_trades'] > 0:
-                stats = dict(result)
+                stats = self._row_to_dict(result)
                 stats['win_rate'] = (stats['wins'] / stats['total_trades'] * 100) if stats['total_trades'] > 0 else 0
                 stats['profit_factor'] = abs(stats['avg_win'] / stats['avg_loss']) if stats['avg_loss'] and stats['avg_loss'] != 0 else 0
                 return stats
@@ -333,13 +381,13 @@ class TradingDatabase:
                 'wins': 0,
                 'losses': 0,
                 'breakeven': 0,
-                'total_pnl': 0,
-                'avg_win': 0,
-                'avg_loss': 0,
-                'max_win': 0,
-                'max_loss': 0,
-                'win_rate': 0,
-                'profit_factor': 0
+                'total_pnl': 0.0,
+                'avg_win': 0.0,
+                'avg_loss': 0.0,
+                'max_win': 0.0,
+                'max_loss': 0.0,
+                'win_rate': 0.0,
+                'profit_factor': 0.0
             }
 
     def log_system_event(self, log_level: str, event_type: str, 
