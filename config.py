@@ -82,9 +82,9 @@ class TradingConfig:
     CIRCUIT_BREAKER_LOSS_THRESHOLD = 1500  # Stop if loss exceeds ₹1500 (positive number)
     CIRCUIT_BREAKER_CONSECUTIVE_LOSSES = 5  # Stop after N consecutive losses
 
-    # Emergency stop (Feature not implemented yet)
-    EMERGENCY_STOP_ENABLED = False
-    EMERGENCY_STOP_HOTKEY = '0000'  # Reserved for future implementation
+    # Emergency stop - NOW IMPLEMENTED
+    EMERGENCY_STOP_ENABLED = True
+    # Use 'emergency' command in the bot's command interface to trigger
 
     # ==================== MONITORING & ALERTS ====================
     ENABLE_LOGGING = True
