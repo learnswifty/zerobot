@@ -35,6 +35,58 @@ from command_handler import CommandHandler
 load_dotenv()
 
 
+class APIRateLimiter:
+    """Rate limiter for API calls to prevent hitting Zerodha limits"""
+
+    def __init__(self, calls_per_second: int = 10, calls_per_minute: int = 200):
+        self.calls_per_second = calls_per_second
+        self.calls_per_minute = calls_per_minute
+        self.second_calls = []  # Timestamps of calls in current second
+        self.minute_calls = []  # Timestamps of calls in current minute
+
+    def wait_if_needed(self):
+        """Wait if rate limit would be exceeded"""
+        current_time = time.time()
+
+        # Clean old timestamps
+        self.second_calls = [t for t in self.second_calls if current_time - t < 1.0]
+        self.minute_calls = [t for t in self.minute_calls if current_time - t < 60.0]
+
+        # Check per-second limit
+        if len(self.second_calls) >= self.calls_per_second:
+            sleep_time = 1.0 - (current_time - self.second_calls[0])
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+                current_time = time.time()
+                self.second_calls = [t for t in self.second_calls if current_time - t < 1.0]
+
+        # Check per-minute limit
+        if len(self.minute_calls) >= self.calls_per_minute:
+            sleep_time = 60.0 - (current_time - self.minute_calls[0])
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+                current_time = time.time()
+                self.minute_calls = [t for t in self.minute_calls if current_time - t < 60.0]
+
+        # Record this call
+        current_time = time.time()
+        self.second_calls.append(current_time)
+        self.minute_calls.append(current_time)
+
+    def get_stats(self) -> Dict:
+        """Get current rate limit statistics"""
+        current_time = time.time()
+        self.second_calls = [t for t in self.second_calls if current_time - t < 1.0]
+        self.minute_calls = [t for t in self.minute_calls if current_time - t < 60.0]
+
+        return {
+            'calls_last_second': len(self.second_calls),
+            'calls_last_minute': len(self.minute_calls),
+            'second_limit': self.calls_per_second,
+            'minute_limit': self.calls_per_minute
+        }
+
+
 class Trade:
     """Represents a single trade"""
 
@@ -105,9 +157,10 @@ class Trade:
 class OrderManager:
     """Handles order placement and management with error handling"""
 
-    def __init__(self, kite: KiteConnect, logger: TradingLogger):
+    def __init__(self, kite: KiteConnect, logger: TradingLogger, rate_limiter: 'APIRateLimiter' = None):
         self.kite = kite
         self.logger = logger
+        self.rate_limiter = rate_limiter
         self.retry_count = TradingConfig.API_RETRY_COUNT
         self.retry_delay = TradingConfig.API_RETRY_DELAY
         # Paper trading mode
@@ -118,6 +171,10 @@ class OrderManager:
                     order_type: str = 'MARKET', price: float = None,
                     trigger_price: float = None) -> Optional[str]:
         """Place an order with retry logic"""
+        # Apply rate limiting
+        if self.rate_limiter:
+            self.rate_limiter.wait_if_needed()
+
         # Simulate orders in paper trading mode
         if self.paper_mode:
             order_id = f"PAPER-{int(time.time() * 1000)}"
@@ -126,6 +183,8 @@ class OrderManager:
             if actual_price is None and order_type == 'MARKET':
                 # For market orders in paper mode, we need to fetch current price
                 try:
+                    if self.rate_limiter:
+                        self.rate_limiter.wait_if_needed()
                     quote = self.kite.quote(f"{TradingConfig.DEFAULT_EXCHANGE}:{symbol}")
                     actual_price = quote[f"{TradingConfig.DEFAULT_EXCHANGE}:{symbol}"]['last_price']
                 except:
@@ -184,6 +243,11 @@ class OrderManager:
         # Paper mode: instantly complete
         if self.paper_mode:
             return self._paper_orders.get(order_id, {'order_id': order_id, 'status': 'COMPLETE'})
+
+        # Apply rate limiting
+        if self.rate_limiter:
+            self.rate_limiter.wait_if_needed()
+
         try:
             orders = self.kite.orders()
             for order in orders:
@@ -307,10 +371,24 @@ class TradingBot:
 
         # Initialize Kite Connect
         self.kite = self._init_kite_connect()
-        self.order_manager = OrderManager(self.kite, self.logger)
+
+        # API Rate Limiter (initialize before OrderManager)
+        self.rate_limiter = APIRateLimiter(
+            calls_per_second=TradingConfig.API_RATE_LIMIT_PER_SECOND,
+            calls_per_minute=TradingConfig.API_RATE_LIMIT_PER_MINUTE
+        )
+        self.logger.info(f"⚡ Rate limiter initialized: {TradingConfig.API_RATE_LIMIT_PER_SECOND}/sec, {TradingConfig.API_RATE_LIMIT_PER_MINUTE}/min")
+
+        # Order manager (pass rate limiter)
+        self.order_manager = OrderManager(self.kite, self.logger, self.rate_limiter)
 
         # Circuit breaker
         self.circuit_breaker = CircuitBreaker(self.logger, self.db)
+
+        # Emergency stop
+        self.emergency_stop_triggered = False
+        if TradingConfig.EMERGENCY_STOP_ENABLED:
+            self.logger.info(f"🚨 Emergency stop enabled - Use 'emergency' command to activate")
 
         # Command handler for runtime control
         self.command_handler = CommandHandler(self.logger)
@@ -382,6 +460,8 @@ class TradingBot:
                 for s in list(self.active_trades.keys()):
                     trade = self.active_trades[s]
                     try:
+                        if self.rate_limiter:
+                            self.rate_limiter.wait_if_needed()
                         quote = self.kite.quote(f"{TradingConfig.DEFAULT_EXCHANGE}:{s}")
                         ltp = quote[f"{TradingConfig.DEFAULT_EXCHANGE}:{s}"]['last_price']
                         self.exit_trade(trade, ltp, "STOPPED_BY_COMMAND")
@@ -394,6 +474,8 @@ class TradingBot:
                 # Close position if exists
                 trade = self.active_trades[symbol]
                 try:
+                    if self.rate_limiter:
+                        self.rate_limiter.wait_if_needed()
                     quote = self.kite.quote(f"{TradingConfig.DEFAULT_EXCHANGE}:{symbol}")
                     ltp = quote[f"{TradingConfig.DEFAULT_EXCHANGE}:{symbol}"]['last_price']
                     self.exit_trade(trade, ltp, "STOPPED_BY_COMMAND")
@@ -409,10 +491,26 @@ class TradingBot:
         def handle_shutdown():
             self.is_running = False
 
+        def handle_emergency_stop():
+            # Set emergency stop flag
+            self.emergency_stop_triggered = True
+            self.logger.critical("Emergency stop triggered!")
+            self.db.log_system_event('CRITICAL', 'EMERGENCY_STOP', 'Emergency stop activated via command')
+
+            # Force exit all positions immediately
+            self.force_exit_all_positions("EMERGENCY_STOP")
+
+            # Halt all trading
+            self.is_running = False
+
+            print(f"\n{Colors.FAIL}🚨 All positions closed. Trading halted.{Colors.ENDC}")
+            print(f"{Colors.WARNING}Bot will shutdown in a moment...{Colors.ENDC}\n")
+
         self.command_handler.register_callback('on_stop_stock', handle_stop_stock)
         self.command_handler.register_callback('on_resume_stock', handle_resume_stock)
         self.command_handler.register_callback('on_status', handle_status)
         self.command_handler.register_callback('on_shutdown', handle_shutdown)
+        self.command_handler.register_callback('on_emergency_stop', handle_emergency_stop)
 
     def is_market_open(self) -> bool:
         """Check if market is currently open"""
@@ -421,6 +519,10 @@ class TradingBot:
 
     def can_take_new_position(self) -> bool:
         """Check if we can take a new position"""
+        # Check emergency stop
+        if self.emergency_stop_triggered:
+            return False
+
         # Check trading hours
         now = datetime.now().time()
         if now > TradingConfig.TRADING_END_TIME:
@@ -464,6 +566,10 @@ class TradingBot:
 
     def get_instrument_token(self, symbol: str) -> Optional[int]:
         """Get instrument token for a symbol"""
+        # Apply rate limiting
+        if self.rate_limiter:
+            self.rate_limiter.wait_if_needed()
+
         try:
             instruments = self.kite.instruments(TradingConfig.DEFAULT_EXCHANGE)
             for inst in instruments:
@@ -491,6 +597,10 @@ class TradingBot:
                 # Live trading - fetch up to now
                 to_date = datetime.now()
                 from_date = to_date - timedelta(days=days)
+
+            # Apply rate limiting
+            if self.rate_limiter:
+                self.rate_limiter.wait_if_needed()
 
             data = self.kite.historical_data(
                 instrument_token=instrument_token,
@@ -842,6 +952,10 @@ class TradingBot:
 
         while retry_count < max_retries and quotes is None:
             try:
+                # Apply rate limiting
+                if self.rate_limiter:
+                    self.rate_limiter.wait_if_needed()
+
                 quotes = self.kite.quote([f"{TradingConfig.DEFAULT_EXCHANGE}:{s}" for s in symbols])
                 break
             except Exception as e:
@@ -925,6 +1039,8 @@ class TradingBot:
         for symbol, trade in list(self.active_trades.items()):
             try:
                 # Get current price
+                if self.rate_limiter:
+                    self.rate_limiter.wait_if_needed()
                 quote = self.kite.quote(f"{TradingConfig.DEFAULT_EXCHANGE}:{symbol}")
                 ltp = quote[f"{TradingConfig.DEFAULT_EXCHANGE}:{symbol}"]['last_price']
 
@@ -1060,6 +1176,8 @@ class TradingBot:
         if self.active_trades:
             for symbol, trade in self.active_trades.items():
                 try:
+                    if self.rate_limiter:
+                        self.rate_limiter.wait_if_needed()
                     quote = self.kite.quote(f"{TradingConfig.DEFAULT_EXCHANGE}:{symbol}")
                     ltp = quote[f"{TradingConfig.DEFAULT_EXCHANGE}:{symbol}"]['last_price']
                     unrealized_pnl = (ltp - trade.entry_price) * trade.quantity if trade.direction == 'LONG' else (trade.entry_price - ltp) * trade.quantity
@@ -1202,28 +1320,41 @@ class TradingBot:
                 print_info(f"   ⚪ Doji Candles: {len(doji_candles)}")
                 print_info("=" * 60 + "\n")
 
-                # Find first red candle
-                first_red = self.identify_first_red_candle(df)
-                if not first_red:
-                    print_warning("❌ No red candle found - Cannot establish setup")
-                    print_info("   Strategy requires first red candle to set high/low levels\n")
-                    continue
+                # Determine setup levels based on config
+                if TradingConfig.WAIT_FOR_FIRST_RED_CANDLE:
+                    # Find first red candle
+                    first_red = self.identify_first_red_candle(df)
+                    if not first_red:
+                        print_warning("❌ No red candle found - Cannot establish setup")
+                        print_info("   Strategy requires first red candle to set high/low levels\n")
+                        continue
 
-                print_success(f"✅ First red candle found at {first_red['time'].strftime('%H:%M')}")
-                print_success(f"   Setup High: ₹{first_red['high']:.2f}")
-                print_success(f"   Setup Low:  ₹{first_red['low']:.2f}\n")
+                    print_success(f"✅ First red candle found at {first_red['time'].strftime('%H:%M')}")
+                    print_success(f"   Setup High: ₹{first_red['high']:.2f}")
+                    print_success(f"   Setup Low:  ₹{first_red['low']:.2f}\n")
 
-                setup_high = first_red['high']
-                setup_low = first_red['low']
+                    setup_high = first_red['high']
+                    setup_low = first_red['low']
+                    first_red_idx = first_red['index']
+                    start_trading_after_idx = first_red_idx
+                else:
+                    # Use first candle of the day as setup
+                    first_candle = df.iloc[0]
+                    setup_high = first_candle['high']
+                    setup_low = first_candle['low']
+                    print_success(f"✅ Using first candle as setup (WAIT_FOR_FIRST_RED_CANDLE=False)")
+                    print_success(f"   Setup High: ₹{setup_high:.2f}")
+                    print_success(f"   Setup Low:  ₹{setup_low:.2f}\n")
+                    start_trading_after_idx = 0
+
                 active_trade = None
-                first_red_idx = first_red['index']
 
                 # Process each candle
                 for idx in range(len(df)):
                     row = df.iloc[idx]
 
-                    # Skip until after first red
-                    if idx <= df.index.get_loc(first_red_idx):
+                    # Skip until after setup candle
+                    if idx <= start_trading_after_idx:
                         continue
 
                     current_time = row['datetime']
@@ -1338,20 +1469,26 @@ class TradingBot:
                             if df is None or len(df) < 2:
                                 continue
 
-                            # Check if we've identified first red candle today
-                            first_red = self.identify_first_red_candle(df)
-                            if not first_red:
-                                continue
+                            # Determine setup levels based on config
+                            if TradingConfig.WAIT_FOR_FIRST_RED_CANDLE:
+                                # Original strategy: Wait for first red candle
+                                first_red = self.identify_first_red_candle(df)
+                                if not first_red:
+                                    continue
+                                setup_high = first_red['high']
+                                setup_low = first_red['low']
+                            else:
+                                # Alternative: Use first candle of the day as setup
+                                first_candle = df.iloc[0]
+                                setup_high = first_candle['high']
+                                setup_low = first_candle['low']
+                                self.logger.debug(f"{symbol}: Using first candle levels - High: ₹{setup_high:.2f}, Low: ₹{setup_low:.2f}")
 
                             # Get current candle (latest data)
                             latest_candle = df.iloc[-1]
                             current_close = latest_candle['close']
                             current_high = latest_candle['high']
                             current_low = latest_candle['low']
-
-                            # First red candle levels
-                            setup_high = first_red['high']
-                            setup_low = first_red['low']
 
                             # Check for LONG breakout signal
                             if current_close > setup_high:
