@@ -1173,7 +1173,7 @@ class TradingBot:
             return
 
         # Track statistics
-        total_trades = len(trades)
+        total_trades = 0  # Will count valid trades only
         winning_trades = 0
         losing_trades = 0
         breakeven_trades = 0
@@ -1189,10 +1189,25 @@ class TradingBot:
         print(f"{Colors.BOLD}{'='*100}{Colors.ENDC}\n")
 
         for idx, trade in enumerate(trades, 1):
+            # Validate trade data
+            if not trade.get('entry_price') or not trade.get('quantity'):
+                print(f"{Colors.WARNING}Trade #{idx} - {trade.get('symbol', 'UNKNOWN')} - SKIPPED (Missing entry data){Colors.ENDC}\n")
+                continue
+
             # Calculate metrics
             entry_value = trade['entry_price'] * trade['quantity']
 
+            # Skip trades with invalid data
+            if not entry_value or entry_value == 0:
+                print(f"{Colors.WARNING}Trade #{idx} - {trade['symbol']} - SKIPPED (Invalid entry value){Colors.ENDC}\n")
+                continue
+
             if trade['status'] == 'CLOSED':
+                # Validate exit data for closed trades
+                if not trade.get('exit_price'):
+                    print(f"{Colors.WARNING}Trade #{idx} - {trade['symbol']} - SKIPPED (Missing exit price){Colors.ENDC}\n")
+                    continue
+
                 gross_pnl = trade['pnl'] if trade['pnl'] else 0
 
                 # Recalculate charges for display
@@ -1211,10 +1226,11 @@ class TradingBot:
                     gross_profit = (trade['entry_price'] - trade['exit_price']) * trade['quantity']
 
                 net_pnl = gross_profit - total_charges
-                pnl_pct = (net_pnl / entry_value) * 100
+                pnl_pct = (net_pnl / entry_value) * 100 if entry_value else 0
                 roi = pnl_pct  # ROI is same as P&L % for intraday trades
 
                 # Track win/loss
+                total_trades += 1
                 if net_pnl > 0:
                     winning_trades += 1
                     if current_streak_type == 'WIN':
