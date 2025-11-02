@@ -1448,34 +1448,6 @@ class TradingBot:
 
                 print_success(f"Loaded {len(df)} candles for {symbol}\n")
 
-                # Display all candles with color analysis
-                print_info("📊 CANDLE ANALYSIS (All 5-minute candles):")
-                print_info("=" * 60)
-
-                red_candles = []
-                green_candles = []
-                doji_candles = []
-
-                for idx, row in df.iterrows():
-                    candle_info = self.analyze_candle(row)
-                    self.display_candle_details(candle_info, show_full=False)
-
-                    # Track candle types
-                    if candle_info['color'] == 'RED':
-                        red_candles.append(candle_info)
-                    elif candle_info['color'] == 'GREEN':
-                        green_candles.append(candle_info)
-                    else:
-                        doji_candles.append(candle_info)
-
-                # Summary
-                print_info("\n" + "=" * 60)
-                print_info(f"📈 CANDLE SUMMARY:")
-                print_success(f"   🟢 Green Candles: {len(green_candles)}")
-                print_error(f"   🔴 Red Candles: {len(red_candles)}")
-                print_info(f"   ⚪ Doji Candles: {len(doji_candles)}")
-                print_info("=" * 60 + "\n")
-
                 # Determine setup levels based on config
                 if TradingConfig.WAIT_FOR_FIRST_RED_CANDLE:
                     # Find first red candle
