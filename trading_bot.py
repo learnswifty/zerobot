@@ -112,6 +112,9 @@ class Trade:
         self.status = 'OPEN'
         self.order_id_entry = None
         self.order_id_exit = None
+        # Exchange stop-loss order tracking (for live trading protection)
+        self.sl_order_id = None  # Current active SL order ID on exchange
+        self.last_exchange_sl = None  # Last SL level placed on exchange
 
     def update_trailing_stop(self, current_price: float, trailing_percent: float):
         """Update trailing stop loss"""
@@ -767,6 +770,105 @@ class TradingBot:
         else:
             return entry_price - reward
 
+    def _place_stop_loss_order(self, symbol: str, trade: Trade) -> Optional[str]:
+        """
+        Place stop-loss order on exchange (live mode only).
+
+        This provides exchange-level protection that survives program crashes,
+        network failures, and system restarts.
+
+        Args:
+            symbol: Trading symbol
+            trade: Trade object with stop loss level
+
+        Returns:
+            order_id if successful, None otherwise
+        """
+        # Skip in paper mode - software monitoring is sufficient for testing
+        if self.order_manager.paper_mode:
+            return None
+
+        # Skip if disabled in config
+        if not TradingConfig.USE_EXCHANGE_STOP_LOSS:
+            self.logger.warning(f"[SL ORDER] Exchange SL disabled in config for {symbol} - software monitoring only (RISKY!)")
+            return None
+
+        transaction_type = 'SELL' if trade.direction == 'LONG' else 'BUY'
+
+        try:
+            order_id = self.order_manager.place_order(
+                symbol=symbol,
+                transaction_type=transaction_type,
+                quantity=trade.quantity,
+                order_type=TradingConfig.SL_ORDER_TYPE,  # SL-M by default
+                trigger_price=trade.stop_loss
+            )
+
+            if order_id:
+                self.logger.info(
+                    f"[SL ORDER] ✅ Placed {order_id} for {symbol} | "
+                    f"Trigger: ₹{trade.stop_loss:.2f} | Qty: {trade.quantity} | Type: {TradingConfig.SL_ORDER_TYPE}"
+                )
+            else:
+                self.logger.error(f"[SL ORDER] ❌ Failed to place SL order for {symbol}")
+
+            return order_id
+
+        except Exception as e:
+            self.logger.error(f"[SL ORDER] ❌ Exception placing SL order for {symbol}: {str(e)}")
+            return None
+
+    def _update_exchange_sl_order(self, trade: Trade) -> bool:
+        """
+        Update stop-loss order on exchange by canceling old and placing new.
+
+        Brief window (~1-2 seconds) with no exchange protection during update,
+        but software monitoring remains active as backup.
+
+        Args:
+            trade: Trade object with updated stop loss
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if self.order_manager.paper_mode:
+            return True
+
+        if not TradingConfig.USE_EXCHANGE_STOP_LOSS:
+            return True
+
+        try:
+            # Cancel existing SL order
+            if trade.sl_order_id:
+                cancel_success = self.order_manager.cancel_order(trade.sl_order_id)
+                if not cancel_success:
+                    self.logger.warning(
+                        f"[SL ORDER] ⚠️ Failed to cancel old SL order {trade.sl_order_id} for {trade.symbol}"
+                    )
+
+            # Place new SL order at updated level
+            new_sl_order_id = self._place_stop_loss_order(trade.symbol, trade)
+
+            if new_sl_order_id:
+                trade.sl_order_id = new_sl_order_id
+                trade.last_exchange_sl = trade.stop_loss
+                self.logger.info(
+                    f"[SL ORDER] 🔄 Updated for {trade.symbol}: "
+                    f"₹{trade.last_exchange_sl:.2f} (order: {new_sl_order_id})"
+                )
+                return True
+            else:
+                self.logger.error(
+                    f"[SL ORDER] ❌ Failed to place updated SL order for {trade.symbol}"
+                )
+                return False
+
+        except Exception as e:
+            self.logger.error(
+                f"[SL ORDER] ❌ Exception updating SL order for {trade.symbol}: {str(e)}"
+            )
+            return False
+
     def enter_trade(self, symbol: str, direction: str, entry_price: float,
                    stop_loss: float, quantity: int) -> Optional[Trade]:
         """Enter a new trade"""
@@ -874,8 +976,22 @@ class TradingBot:
         self.daily_trades_count += 1
         self.stock_entry_count[symbol] += 1
 
+        # Place stop-loss order on exchange (live mode only)
+        # This provides exchange-level protection that survives program crashes and network failures
+        if not self.order_manager.paper_mode and TradingConfig.USE_EXCHANGE_STOP_LOSS:
+            sl_order_id = self._place_stop_loss_order(symbol, trade)
+            if sl_order_id:
+                trade.sl_order_id = sl_order_id
+                trade.last_exchange_sl = trade.stop_loss
+                self.logger.info(f"[SL ORDER] 🛡️ Protection active for {symbol}")
+            else:
+                self.logger.warning(
+                    f"[SL ORDER] ⚠️ No exchange SL placed for {symbol} - "
+                    f"software monitoring only (RISKY!)"
+                )
+
         # Log trade entry
-        self.logger.trade_entry(symbol, direction, quantity, entry_price, 
+        self.logger.trade_entry(symbol, direction, quantity, entry_price,
                                stop_loss, target_price)
 
         return trade
@@ -924,6 +1040,20 @@ class TradingBot:
 
     def exit_trade(self, trade: Trade, exit_price: float, reason: str) -> bool:
         """Exit a trade and return success status"""
+
+        # Cancel SL order first (if exists in live mode)
+        # This prevents the SL order from executing after we exit the position
+        if not self.order_manager.paper_mode and trade.sl_order_id:
+            self.logger.info(f"[SL ORDER] 🔄 Canceling SL order {trade.sl_order_id} for {trade.symbol}")
+            cancel_success = self.order_manager.cancel_order(trade.sl_order_id)
+            if cancel_success:
+                trade.sl_order_id = None
+                self.logger.info(f"[SL ORDER] ✅ SL order cancelled successfully")
+            else:
+                self.logger.warning(
+                    f"[SL ORDER] ⚠️ Failed to cancel SL order {trade.sl_order_id}. "
+                    f"Will proceed with exit anyway."
+                )
 
         # Place exit order
         transaction_type = 'SELL' if trade.direction == 'LONG' else 'BUY'
@@ -1092,6 +1222,26 @@ class TradingBot:
                     if trade.stop_loss != old_sl:
                         self.db.update_trade(trade.trade_id, {'stop_loss': trade.stop_loss})
                         self.logger.info(f"{symbol} trailing SL updated: ₹{old_sl:.2f} -> ₹{trade.stop_loss:.2f}")
+
+                        # UPDATE EXCHANGE SL IF MOVED SIGNIFICANTLY (live mode only)
+                        # This implements the hybrid approach: precise software trailing with
+                        # periodic exchange updates for protection
+                        if (not self.order_manager.paper_mode and
+                            TradingConfig.USE_EXCHANGE_STOP_LOSS and
+                            trade.last_exchange_sl is not None):
+
+                            # Calculate how much SL moved as percentage
+                            sl_move_percent = abs(
+                                (trade.stop_loss - trade.last_exchange_sl) / trade.last_exchange_sl
+                            ) * 100
+
+                            # Update exchange SL if moved by threshold or more
+                            if sl_move_percent >= TradingConfig.SL_UPDATE_THRESHOLD_PERCENT:
+                                self.logger.info(
+                                    f"[SL ORDER] Trailing SL moved {sl_move_percent:.2f}% "
+                                    f"(threshold: {TradingConfig.SL_UPDATE_THRESHOLD_PERCENT}%) - updating exchange order"
+                                )
+                                self._update_exchange_sl_order(trade)
 
             except Exception as e:
                 self.logger.error(f"Error monitoring {symbol}: {str(e)}")

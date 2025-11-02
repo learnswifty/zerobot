@@ -111,6 +111,8 @@ class TradingDatabase:
                     status TEXT DEFAULT 'OPEN',
                     order_id_entry TEXT,
                     order_id_exit TEXT,
+                    sl_order_id TEXT,
+                    last_exchange_sl REAL,
                     notes TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -175,9 +177,24 @@ class TradingDatabase:
             ''')
 
             cursor.execute('''
-                CREATE INDEX IF NOT EXISTS idx_trades_status 
+                CREATE INDEX IF NOT EXISTS idx_trades_status
                 ON trades(status)
             ''')
+
+            # Migration: Add SL order tracking columns if they don't exist
+            # This is for backward compatibility with existing databases
+            try:
+                # Check if columns exist by trying to query them
+                cursor.execute("SELECT sl_order_id, last_exchange_sl FROM trades LIMIT 1")
+            except Exception:
+                # Columns don't exist, add them
+                try:
+                    cursor.execute("ALTER TABLE trades ADD COLUMN sl_order_id TEXT")
+                    cursor.execute("ALTER TABLE trades ADD COLUMN last_exchange_sl REAL")
+                    conn.commit()
+                    print("✅ Database migration: Added SL order tracking columns")
+                except Exception as e:
+                    print(f"⚠️ Database migration warning: {str(e)}")
 
     def save_trade(self, trade_data: Dict) -> int:
         """Save a new trade to database"""

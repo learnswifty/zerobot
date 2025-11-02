@@ -113,6 +113,11 @@ class TradingConfig:
     ENABLE_PARTIAL_EXITS = False     # Feature reserved for future implementation
     ENABLE_POSITION_SCALING = False  # Feature reserved for future implementation
 
+    # Stop Loss Management (CRITICAL for live trading safety)
+    USE_EXCHANGE_STOP_LOSS = True    # Place SL orders on exchange (HIGHLY RECOMMENDED for live trading)
+    SL_ORDER_TYPE = 'SL-M'           # SL-M (Stop Loss Market) - guaranteed execution
+    SL_UPDATE_THRESHOLD_PERCENT = 0.5  # Update exchange SL when trailing moves this % or more
+
     # Websocket for real-time data (Feature reserved for future implementation)
     USE_WEBSOCKET = False
 
