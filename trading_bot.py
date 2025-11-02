@@ -880,6 +880,48 @@ class TradingBot:
 
         return trade
 
+    def calculate_charges(self, entry_price: float, exit_price: float, quantity: int, direction: str) -> Dict[str, float]:
+        """Calculate all charges and taxes for a trade (Indian market - NSE intraday)"""
+
+        # Turnover calculation
+        buy_value = entry_price * quantity if direction == 'LONG' else exit_price * quantity
+        sell_value = exit_price * quantity if direction == 'LONG' else entry_price * quantity
+        turnover = buy_value + sell_value
+
+        # 1. Brokerage (assuming 0.03% or ₹20 per order, whichever is lower - typical discount broker)
+        brokerage_buy = min(buy_value * 0.0003, 20)
+        brokerage_sell = min(sell_value * 0.0003, 20)
+        total_brokerage = brokerage_buy + brokerage_sell
+
+        # 2. STT (Securities Transaction Tax) - 0.025% on sell side for intraday equity
+        stt = sell_value * 0.00025
+
+        # 3. Transaction charges - NSE: 0.00325% on turnover
+        transaction_charges = turnover * 0.0000325
+
+        # 4. GST - 18% on (brokerage + transaction charges)
+        gst = (total_brokerage + transaction_charges) * 0.18
+
+        # 5. SEBI charges - ₹10 per crore (₹0.000001 per rupee)
+        sebi_charges = turnover * 0.00001
+
+        # 6. Stamp duty - 0.003% on buy side
+        stamp_duty = buy_value * 0.00003
+
+        # Total charges
+        total_charges = total_brokerage + stt + transaction_charges + gst + sebi_charges + stamp_duty
+
+        return {
+            'brokerage': total_brokerage,
+            'stt': stt,
+            'transaction_charges': transaction_charges,
+            'gst': gst,
+            'sebi_charges': sebi_charges,
+            'stamp_duty': stamp_duty,
+            'total_charges': total_charges,
+            'turnover': turnover
+        }
+
     def exit_trade(self, trade: Trade, exit_price: float, reason: str) -> bool:
         """Exit a trade and return success status"""
 
@@ -904,15 +946,57 @@ class TradingBot:
         trade.close_trade(datetime.now(), exit_price, reason)
         trade.order_id_exit = order_id
 
-        # Update database
+        # Calculate charges and net P&L
+        charges = self.calculate_charges(trade.entry_price, exit_price, trade.quantity, trade.direction)
+        gross_pnl = trade.pnl
+        net_pnl = gross_pnl - charges['total_charges']
+
+        # Print detailed trade breakdown
+        print(f"\n{Colors.BOLD}{'='*70}{Colors.ENDC}")
+        print(f"{Colors.BOLD}📋 TRADE DETAILS - {trade.symbol}{Colors.ENDC}")
+        print(f"{Colors.BOLD}{'='*70}{Colors.ENDC}")
+
+        # Entry/Exit Info
+        print(f"\n{Colors.OKCYAN}Entry:{Colors.ENDC}")
+        print(f"  Direction: {trade.direction}")
+        print(f"  Time:      {trade.entry_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"  Price:     ₹{trade.entry_price:.2f}")
+        print(f"  Quantity:  {trade.quantity}")
+        print(f"  Value:     ₹{trade.entry_price * trade.quantity:,.2f}")
+
+        print(f"\n{Colors.OKCYAN}Exit:{Colors.ENDC}")
+        print(f"  Time:      {trade.exit_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"  Price:     ₹{trade.exit_price:.2f}")
+        print(f"  Value:     ₹{trade.exit_price * trade.quantity:,.2f}")
+        print(f"  Reason:    {reason}")
+
+        # P&L Breakdown
+        pnl_color = Colors.OKGREEN if net_pnl >= 0 else Colors.FAIL
+        print(f"\n{Colors.OKCYAN}P&L Breakdown:{Colors.ENDC}")
+        print(f"  Gross P&L:           {pnl_color}₹{gross_pnl:,.2f}{Colors.ENDC}")
+
+        # Charges breakdown
+        print(f"\n{Colors.WARNING}Charges & Taxes:{Colors.ENDC}")
+        print(f"  Brokerage:           ₹{charges['brokerage']:.2f}")
+        print(f"  STT:                 ₹{charges['stt']:.2f}")
+        print(f"  Transaction Charges: ₹{charges['transaction_charges']:.2f}")
+        print(f"  GST (18%):           ₹{charges['gst']:.2f}")
+        print(f"  SEBI Charges:        ₹{charges['sebi_charges']:.2f}")
+        print(f"  Stamp Duty:          ₹{charges['stamp_duty']:.2f}")
+        print(f"  {Colors.BOLD}Total Charges:       ₹{charges['total_charges']:.2f}{Colors.ENDC}")
+
+        print(f"\n{Colors.BOLD}{pnl_color}Net P&L:               ₹{net_pnl:,.2f} ({(net_pnl/(trade.entry_price*trade.quantity))*100:.2f}%){Colors.ENDC}")
+        print(f"{Colors.BOLD}{'='*70}{Colors.ENDC}\n")
+
+        # Update database with net P&L
         try:
             self.db.close_trade(
                 trade.trade_id,
                 trade.exit_time,
                 trade.exit_price,
                 trade.exit_reason,
-                trade.pnl,
-                trade.pnl_percent,
+                net_pnl,  # Store net P&L instead of gross
+                (net_pnl/(trade.entry_price*trade.quantity))*100,  # Net P&L %
                 order_id
             )
             self.logger.debug(f"✓ Trade {trade.trade_id} closed in database")
@@ -921,18 +1005,18 @@ class TradingBot:
             import traceback
             self.logger.error(traceback.format_exc())
 
-        # Update capital AND buying power
-        self.current_capital += trade.pnl
+        # Update capital AND buying power with net P&L
+        self.current_capital += net_pnl
         self.buying_power = self.current_capital * self.leverage
 
         # Remove from active trades
         if trade.symbol in self.active_trades:
             del self.active_trades[trade.symbol]
 
-        # Log trade exit
+        # Log trade exit (using net P&L)
         self.logger.trade_exit(trade.symbol, trade.direction, trade.quantity,
                               trade.entry_price, trade.exit_price,
-                              trade.pnl, reason)
+                              net_pnl, reason)
 
         return True
 
@@ -1067,94 +1151,22 @@ class TradingBot:
             self.logger.info(f"Successfully exited all {len(list(self.active_trades.keys()))} positions")
 
     def generate_daily_summary(self):
-        """Generate and save daily summary with drawdown calculation"""
-        trades = self.db.get_trades_by_date(self.today_date)
+        """Generate simple daily summary - just show final capital"""
+        pnl_today = self.current_capital - self.initial_capital
+        pnl_percent = (pnl_today / self.initial_capital) * 100
+        pnl_color = Colors.OKGREEN if pnl_today >= 0 else Colors.FAIL
 
-        self.logger.debug(f"📊 Summary check: Found {len(trades) if trades else 0} trades in database for {self.today_date}")
+        print(f"\n{Colors.BOLD}{'='*70}{Colors.ENDC}")
+        print(f"{Colors.BOLD}📊 END OF DAY SUMMARY - {self.today_date}{Colors.ENDC}")
+        print(f"{Colors.BOLD}{'='*70}{Colors.ENDC}\n")
 
-        if not trades:
-            self.logger.info("No trades today")
-            return
+        print(f"  Starting Capital:  ₹{self.initial_capital:,.2f}")
+        print(f"  Ending Capital:    ₹{self.current_capital:,.2f}")
+        print(f"  {Colors.BOLD}{pnl_color}Net P&L:           ₹{pnl_today:,.2f} ({pnl_percent:.2f}%){Colors.ENDC}")
 
-        closed_trades = [t for t in trades if t['status'] == 'CLOSED']
-        self.logger.debug(f"📊 Of which {len(closed_trades)} are closed")
+        print(f"\n{Colors.BOLD}{'='*70}{Colors.ENDC}\n")
 
-        if not closed_trades:
-            self.logger.info("No closed trades today")
-            return
-
-        # Calculate statistics
-        total_trades = len(closed_trades)
-        winning_trades = sum(1 for t in closed_trades if t['pnl'] > 0)
-        losing_trades = sum(1 for t in closed_trades if t['pnl'] < 0)
-        breakeven_trades = sum(1 for t in closed_trades if t['pnl'] == 0)
-
-        total_pnl = sum(t['pnl'] for t in closed_trades)
-        win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
-
-        wins = [t['pnl'] for t in closed_trades if t['pnl'] > 0]
-        losses = [t['pnl'] for t in closed_trades if t['pnl'] < 0]
-
-        avg_win = sum(wins) / len(wins) if wins else 0
-        avg_loss = sum(losses) / len(losses) if losses else 0
-        largest_win = max(wins) if wins else 0
-        largest_loss = min(losses) if losses else 0
-        profit_factor = abs(sum(wins) / sum(losses)) if losses and sum(losses) != 0 else 0
-
-        # Calculate maximum drawdown
-        max_drawdown = self._calculate_max_drawdown(closed_trades)
-
-        # Save summary
-        summary = {
-            'trade_date': self.today_date,
-            'total_trades': total_trades,
-            'winning_trades': winning_trades,
-            'losing_trades': losing_trades,
-            'breakeven_trades': breakeven_trades,
-            'total_pnl': total_pnl,
-            'win_rate': win_rate,
-            'avg_win': avg_win,
-            'avg_loss': avg_loss,
-            'largest_win': largest_win,
-            'largest_loss': largest_loss,
-            'profit_factor': profit_factor,
-            'starting_capital': self.initial_capital,
-            'ending_capital': self.current_capital,
-            'max_drawdown': max_drawdown
-        }
-
-        self.db.save_daily_summary(summary)
-        self.logger.daily_summary(total_trades, winning_trades, losing_trades,
-                                 total_pnl, win_rate)
-
-    def _calculate_max_drawdown(self, closed_trades: List[Dict]) -> float:
-        """Calculate maximum drawdown from closed trades"""
-        if not closed_trades:
-            return 0.0
-
-        # Sort trades by exit time
-        sorted_trades = sorted(closed_trades, key=lambda t: t['exit_time'])
-
-        # Calculate cumulative P&L curve
-        running_capital = self.initial_capital
-        peak_capital = running_capital
-        max_drawdown = 0.0
-
-        for trade in sorted_trades:
-            running_capital += trade['pnl']
-
-            # Update peak
-            if running_capital > peak_capital:
-                peak_capital = running_capital
-
-            # Calculate drawdown from peak
-            drawdown = peak_capital - running_capital
-
-            # Update max drawdown
-            if drawdown > max_drawdown:
-                max_drawdown = drawdown
-
-        return max_drawdown
+        self.logger.info(f"Day ended - Starting: ₹{self.initial_capital:,.2f} | Ending: ₹{self.current_capital:,.2f} | P&L: ₹{pnl_today:,.2f}")
 
     def _show_status(self):
         """Show current bot status"""
