@@ -1151,22 +1151,166 @@ class TradingBot:
             self.logger.info(f"Successfully exited all {len(list(self.active_trades.keys()))} positions")
 
     def generate_daily_summary(self):
-        """Generate simple daily summary - just show final capital"""
+        """Generate detailed daily summary with trade-by-trade breakdown"""
         pnl_today = self.current_capital - self.initial_capital
         pnl_percent = (pnl_today / self.initial_capital) * 100
         pnl_color = Colors.OKGREEN if pnl_today >= 0 else Colors.FAIL
 
-        print(f"\n{Colors.BOLD}{'='*70}{Colors.ENDC}")
+        print(f"\n{Colors.BOLD}{'='*100}{Colors.ENDC}")
         print(f"{Colors.BOLD}📊 END OF DAY SUMMARY - {self.today_date}{Colors.ENDC}")
-        print(f"{Colors.BOLD}{'='*70}{Colors.ENDC}\n")
+        print(f"{Colors.BOLD}{'='*100}{Colors.ENDC}\n")
 
         print(f"  Starting Capital:  ₹{self.initial_capital:,.2f}")
         print(f"  Ending Capital:    ₹{self.current_capital:,.2f}")
-        print(f"  {Colors.BOLD}{pnl_color}Net P&L:           ₹{pnl_today:,.2f} ({pnl_percent:.2f}%){Colors.ENDC}")
+        print(f"  {Colors.BOLD}{pnl_color}Net P&L:           ₹{pnl_today:,.2f} ({pnl_percent:.2f}%){Colors.ENDC}\n")
 
-        print(f"\n{Colors.BOLD}{'='*70}{Colors.ENDC}\n")
+        # Get all trades for the day from database
+        trades = self.db.get_trades_by_date(self.today_date)
 
-        self.logger.info(f"Day ended - Starting: ₹{self.initial_capital:,.2f} | Ending: ₹{self.current_capital:,.2f} | P&L: ₹{pnl_today:,.2f}")
+        if not trades:
+            print(f"{Colors.WARNING}  No trades executed today{Colors.ENDC}")
+            print(f"\n{Colors.BOLD}{'='*100}{Colors.ENDC}\n")
+            return
+
+        # Track statistics
+        total_trades = 0  # Will count valid trades only
+        winning_trades = 0
+        losing_trades = 0
+        breakeven_trades = 0
+
+        current_streak = 0
+        current_streak_type = None
+        longest_win_streak = 0
+        longest_loss_streak = 0
+
+        # Display trade-by-trade breakdown
+        print(f"{Colors.BOLD}{'='*100}{Colors.ENDC}")
+        print(f"{Colors.BOLD}TRADE-BY-TRADE BREAKDOWN{Colors.ENDC}")
+        print(f"{Colors.BOLD}{'='*100}{Colors.ENDC}\n")
+
+        for idx, trade in enumerate(trades, 1):
+            # Validate trade data
+            if not trade.get('entry_price') or not trade.get('quantity'):
+                print(f"{Colors.WARNING}Trade #{idx} - {trade.get('symbol', 'UNKNOWN')} - SKIPPED (Missing entry data){Colors.ENDC}\n")
+                continue
+
+            # Calculate metrics
+            entry_value = trade['entry_price'] * trade['quantity']
+
+            # Skip trades with invalid data
+            if not entry_value or entry_value == 0:
+                print(f"{Colors.WARNING}Trade #{idx} - {trade['symbol']} - SKIPPED (Invalid entry value){Colors.ENDC}\n")
+                continue
+
+            if trade['status'] == 'CLOSED':
+                # Validate exit data for closed trades
+                if not trade.get('exit_price'):
+                    print(f"{Colors.WARNING}Trade #{idx} - {trade['symbol']} - SKIPPED (Missing exit price){Colors.ENDC}\n")
+                    continue
+
+                gross_pnl = trade['pnl'] if trade['pnl'] else 0
+
+                # Recalculate charges for display
+                charges = self.calculate_charges(
+                    trade['entry_price'],
+                    trade['exit_price'],
+                    trade['quantity'],
+                    trade['direction']
+                )
+                total_charges = charges['total_charges']
+
+                # Net P&L should already be in database, but recalculate for accuracy
+                if trade['direction'] == 'LONG':
+                    gross_profit = (trade['exit_price'] - trade['entry_price']) * trade['quantity']
+                else:
+                    gross_profit = (trade['entry_price'] - trade['exit_price']) * trade['quantity']
+
+                net_pnl = gross_profit - total_charges
+                pnl_pct = (net_pnl / entry_value) * 100 if entry_value else 0
+                roi = pnl_pct  # ROI is same as P&L % for intraday trades
+
+                # Track win/loss
+                total_trades += 1
+                if net_pnl > 0:
+                    winning_trades += 1
+                    if current_streak_type == 'WIN':
+                        current_streak += 1
+                    else:
+                        current_streak = 1
+                        current_streak_type = 'WIN'
+                    longest_win_streak = max(longest_win_streak, current_streak)
+                elif net_pnl < 0:
+                    losing_trades += 1
+                    if current_streak_type == 'LOSS':
+                        current_streak += 1
+                    else:
+                        current_streak = 1
+                        current_streak_type = 'LOSS'
+                    longest_loss_streak = max(longest_loss_streak, current_streak)
+                else:
+                    breakeven_trades += 1
+                    current_streak = 0
+                    current_streak_type = None
+
+                # Color coding
+                pnl_display_color = Colors.OKGREEN if net_pnl >= 0 else Colors.FAIL
+
+                # Print trade details
+                print(f"{Colors.BOLD}Trade #{idx} - {trade['symbol']} ({trade['direction']}){Colors.ENDC}")
+                print(f"  Entry:  {trade['entry_time']} @ ₹{trade['entry_price']:.2f} × {trade['quantity']:,} = ₹{entry_value:,.2f}")
+
+                exit_value = trade['exit_price'] * trade['quantity']
+                print(f"  Exit:   {trade['exit_time']} @ ₹{trade['exit_price']:.2f} × {trade['quantity']:,} = ₹{exit_value:,.2f}")
+                print(f"  Reason: {trade['exit_reason']}")
+
+                print(f"\n  {Colors.BOLD}Performance:{Colors.ENDC}")
+                print(f"    Gross P&L:      ₹{gross_profit:,.2f}")
+                print(f"    Total Charges:  ₹{total_charges:,.2f}")
+                print(f"    {pnl_display_color}Net P&L:        ₹{net_pnl:,.2f} ({pnl_pct:+.2f}%){Colors.ENDC}")
+                print(f"    {pnl_display_color}ROI:            {roi:+.2f}%{Colors.ENDC}")
+
+                # Show current streak status for this trade
+                if current_streak_type == 'WIN' and net_pnl > 0:
+                    streak_color = Colors.OKGREEN
+                    print(f"    {streak_color}Win Streak:     {current_streak}{Colors.ENDC}")
+                elif current_streak_type == 'LOSS' and net_pnl < 0:
+                    streak_color = Colors.FAIL
+                    print(f"    {streak_color}Loss Streak:    {current_streak}{Colors.ENDC}")
+
+                print()  # Blank line between trades
+            else:
+                # Open trade (shouldn't happen in end of day summary, but handle it)
+                print(f"{Colors.BOLD}Trade #{idx} - {trade['symbol']} ({trade['direction']}){Colors.ENDC}")
+                print(f"  Entry:  {trade['entry_time']} @ ₹{trade['entry_price']:.2f} × {trade['quantity']:,}")
+                print(f"  {Colors.WARNING}Status: OPEN (Not closed){Colors.ENDC}\n")
+
+        # Aggregate statistics
+        print(f"{Colors.BOLD}{'='*100}{Colors.ENDC}")
+        print(f"{Colors.BOLD}AGGREGATE STATISTICS{Colors.ENDC}")
+        print(f"{Colors.BOLD}{'='*100}{Colors.ENDC}\n")
+
+        win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
+
+        print(f"  Total Trades:          {total_trades}")
+        print(f"  {Colors.OKGREEN}Winning Trades:        {winning_trades}{Colors.ENDC}")
+        print(f"  {Colors.FAIL}Losing Trades:         {losing_trades}{Colors.ENDC}")
+        print(f"  Breakeven Trades:      {breakeven_trades}")
+        print(f"  Win Rate:              {win_rate:.1f}%")
+        print()
+        print(f"  {Colors.OKGREEN}Longest Win Streak:    {longest_win_streak}{Colors.ENDC}")
+        print(f"  {Colors.FAIL}Longest Loss Streak:   {longest_loss_streak}{Colors.ENDC}")
+
+        # Current streak at end of day
+        if current_streak_type == 'WIN':
+            print(f"  {Colors.OKGREEN}Current Streak:        {current_streak} wins{Colors.ENDC}")
+        elif current_streak_type == 'LOSS':
+            print(f"  {Colors.FAIL}Current Streak:        {current_streak} losses{Colors.ENDC}")
+        else:
+            print(f"  Current Streak:        None")
+
+        print(f"\n{Colors.BOLD}{'='*100}{Colors.ENDC}\n")
+
+        self.logger.info(f"Day ended - Starting: ₹{self.initial_capital:,.2f} | Ending: ₹{self.current_capital:,.2f} | P&L: ₹{pnl_today:,.2f} | Trades: {total_trades} (W:{winning_trades} L:{losing_trades})")
 
     def _show_status(self):
         """Show current bot status"""
@@ -1303,34 +1447,6 @@ class TradingBot:
                     continue
 
                 print_success(f"Loaded {len(df)} candles for {symbol}\n")
-
-                # Display all candles with color analysis
-                print_info("📊 CANDLE ANALYSIS (All 5-minute candles):")
-                print_info("=" * 60)
-
-                red_candles = []
-                green_candles = []
-                doji_candles = []
-
-                for idx, row in df.iterrows():
-                    candle_info = self.analyze_candle(row)
-                    self.display_candle_details(candle_info, show_full=False)
-
-                    # Track candle types
-                    if candle_info['color'] == 'RED':
-                        red_candles.append(candle_info)
-                    elif candle_info['color'] == 'GREEN':
-                        green_candles.append(candle_info)
-                    else:
-                        doji_candles.append(candle_info)
-
-                # Summary
-                print_info("\n" + "=" * 60)
-                print_info(f"📈 CANDLE SUMMARY:")
-                print_success(f"   🟢 Green Candles: {len(green_candles)}")
-                print_error(f"   🔴 Red Candles: {len(red_candles)}")
-                print_info(f"   ⚪ Doji Candles: {len(doji_candles)}")
-                print_info("=" * 60 + "\n")
 
                 # Determine setup levels based on config
                 if TradingConfig.WAIT_FOR_FIRST_RED_CANDLE:
