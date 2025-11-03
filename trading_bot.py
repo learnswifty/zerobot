@@ -30,7 +30,7 @@ from config import TradingConfig, ExitStrategyConfig
 from logger import TradingLogger, get_logger, print_header, print_success, print_error, print_warning, print_info, Colors
 from database import TradingDatabase
 from command_handler import CommandHandler
-from timezone_utils import now_ist, today_ist, current_time_ist, format_ist_datetime
+from timezone_utils import now_ist, today_ist, current_time_ist, format_ist_datetime, to_naive_ist
 
 # Load environment variables
 load_dotenv()
@@ -591,18 +591,20 @@ class TradingBot:
             # For historical backtests, fetch complete day data
             # For live trading (today), fetch up to current time
             if trade_date.date() < today:
-                # Historical backtest - fetch full day
+                # Historical backtest - fetch full day (naive datetime, assumed as IST by Kite)
                 from_date = trade_date.replace(hour=0, minute=0, second=0)
                 to_date = trade_date.replace(hour=23, minute=59, second=59)
             else:
                 # Live trading - fetch up to now
-                to_date = now_ist()
+                # Convert to naive IST datetime for Kite API
+                to_date = to_naive_ist(now_ist())
                 from_date = to_date - timedelta(days=days)
 
             # Apply rate limiting
             if self.rate_limiter:
                 self.rate_limiter.wait_if_needed()
 
+            # Kite API expects naive datetime objects in IST
             data = self.kite.historical_data(
                 instrument_token=instrument_token,
                 from_date=from_date,

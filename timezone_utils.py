@@ -46,3 +46,22 @@ def format_ist_datetime(dt: datetime = None, fmt: str = '%Y-%m-%d %H:%M:%S') -> 
     else:
         dt = dt.astimezone(IST)
     return dt.strftime(fmt)
+
+
+def to_naive_ist(dt: datetime) -> datetime:
+    """
+    Convert datetime to naive IST datetime (removes timezone info)
+    This is useful for Kite API which expects naive datetime objects in IST
+
+    Args:
+        dt: Timezone-aware or naive datetime
+
+    Returns:
+        Naive datetime representing IST time
+    """
+    if dt.tzinfo is None:
+        # Already naive, assume it's IST
+        return dt
+    else:
+        # Convert to IST and remove timezone info
+        return dt.astimezone(IST).replace(tzinfo=None)
