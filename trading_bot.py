@@ -30,6 +30,7 @@ from config import TradingConfig, ExitStrategyConfig
 from logger import TradingLogger, get_logger, print_header, print_success, print_error, print_warning, print_info, Colors
 from database import TradingDatabase
 from command_handler import CommandHandler
+from timezone_utils import now_ist, today_ist, current_time_ist, format_ist_datetime, to_naive_ist
 
 # Load environment variables
 load_dotenv()
@@ -397,7 +398,7 @@ class TradingBot:
         # Trading state
         self.active_trades: Dict[str, Trade] = {}
         self.monitored_stocks: List[str] = []  # Track all stocks being monitored
-        self.today_date = trade_date if trade_date else datetime.now().date().isoformat()
+        self.today_date = trade_date if trade_date else today_ist().isoformat()
         self.daily_trades_count = 0
         self.stock_entry_count = defaultdict(int)
         self.is_running = False
@@ -514,7 +515,7 @@ class TradingBot:
 
     def is_market_open(self) -> bool:
         """Check if market is currently open"""
-        now = datetime.now().time()
+        now = current_time_ist()
         return (TradingConfig.MARKET_OPEN_TIME <= now <= TradingConfig.MARKET_CLOSE_TIME)
 
     def can_take_new_position(self) -> bool:
@@ -524,7 +525,7 @@ class TradingBot:
             return False
 
         # Check trading hours
-        now = datetime.now().time()
+        now = current_time_ist()
         if now > TradingConfig.TRADING_END_TIME:
             return False
 
@@ -585,23 +586,25 @@ class TradingBot:
         try:
             # Parse the trade date
             trade_date = datetime.strptime(self.today_date, '%Y-%m-%d')
-            today = datetime.now().date()
+            today = today_ist()
 
             # For historical backtests, fetch complete day data
             # For live trading (today), fetch up to current time
             if trade_date.date() < today:
-                # Historical backtest - fetch full day
+                # Historical backtest - fetch full day (naive datetime, assumed as IST by Kite)
                 from_date = trade_date.replace(hour=0, minute=0, second=0)
                 to_date = trade_date.replace(hour=23, minute=59, second=59)
             else:
                 # Live trading - fetch up to now
-                to_date = datetime.now()
+                # Convert to naive IST datetime for Kite API
+                to_date = to_naive_ist(now_ist())
                 from_date = to_date - timedelta(days=days)
 
             # Apply rate limiting
             if self.rate_limiter:
                 self.rate_limiter.wait_if_needed()
 
+            # Kite API expects naive datetime objects in IST
             data = self.kite.historical_data(
                 instrument_token=instrument_token,
                 from_date=from_date,
@@ -837,7 +840,7 @@ class TradingBot:
         trade = Trade(
             symbol=symbol,
             direction=direction,
-            entry_time=datetime.now(),
+            entry_time=now_ist(),
             entry_price=entry_price,
             quantity=quantity,
             stop_loss=stop_loss,
@@ -943,7 +946,7 @@ class TradingBot:
             return False
 
         # Close trade
-        trade.close_trade(datetime.now(), exit_price, reason)
+        trade.close_trade(now_ist(), exit_price, reason)
         trade.order_id_exit = order_id
 
         # Calculate charges and net P&L
@@ -1411,7 +1414,7 @@ class TradingBot:
         print_success("=" * 80 + "\n")
 
         # Check if historical backtest or live trading
-        today = datetime.now().date().isoformat()
+        today = today_ist().isoformat()
         is_historical = self.today_date < today
 
         if is_historical:
@@ -1566,7 +1569,7 @@ class TradingBot:
 
         while self.is_running:
             try:
-                current_time = datetime.now().time()
+                current_time = current_time_ist()
 
                 if not self.is_market_open():
                     self.logger.info("Market is closed")
@@ -1709,7 +1712,7 @@ def get_trading_date() -> str:
 
         if not date_input:
             # User pressed Enter - use today
-            today = datetime.now().date().isoformat()
+            today = today_ist().isoformat()
             print_success(f"Selected: Today ({today}) - Live paper trading mode")
             return today
         else:
@@ -1719,12 +1722,12 @@ def get_trading_date() -> str:
                 selected_date = parsed_date.date().isoformat()
 
                 # Check if date is in the future
-                if parsed_date.date() > datetime.now().date():
+                if parsed_date.date() > today_ist():
                     print_error("Cannot select future date. Please choose today or past date.")
                     continue
 
                 # Check if date is too old (optional - limit to 30 days)
-                days_ago = (datetime.now().date() - parsed_date.date()).days
+                days_ago = (today_ist() - parsed_date.date()).days
                 if days_ago > 30:
                     print_warning(f"Warning: Date is {days_ago} days in the past")
                     confirm = input("Historical data may be limited. Continue? (y/n): ").strip().lower()
@@ -1825,7 +1828,7 @@ def main():
     """Main entry point"""
     try:
         print_header("Production Trading Bot - Zerodha")
-        print_info(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print_info(f"Date: {format_ist_datetime()} IST")
         print_info(f"Market Hours: {TradingConfig.MARKET_OPEN_TIME.strftime('%H:%M')} - "
                   f"{TradingConfig.MARKET_CLOSE_TIME.strftime('%H:%M')}\n")
 
@@ -1846,7 +1849,7 @@ def main():
             trade_date = get_trading_date()
         else:
             # Live trading always uses today
-            trade_date = datetime.now().date().isoformat()
+            trade_date = today_ist().isoformat()
             print_info(f"Live trading date: {trade_date}\n")
 
         # Get user inputs
