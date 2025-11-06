@@ -18,7 +18,7 @@ import os
 import sys
 import time
 from datetime import datetime, timedelta, time as dt_time
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Set
 import pandas as pd
 import numpy as np
 from kiteconnect import KiteConnect
@@ -354,7 +354,8 @@ class TradingBot:
     """Main trading bot with production-ready features"""
 
     def __init__(self, capital: float, leverage: float = 5.0,
-                 exit_strategy: ExitStrategyConfig = None, trade_date: str = None):
+                 exit_strategy: ExitStrategyConfig = None, trade_date: str = None,
+                 top_gainers: List[str] = None):
 
         # Initialize components
         self.logger = get_logger()
@@ -398,6 +399,7 @@ class TradingBot:
         # Trading state
         self.active_trades: Dict[str, Trade] = {}
         self.monitored_stocks: List[str] = []  # Track all stocks being monitored
+        self.top_gainers: Set[str] = set(top_gainers or [])  # Track Top Gainers stocks (only LONG positions)
         self.today_date = trade_date if trade_date else today_ist().isoformat()
         self.daily_trades_count = 0
         self.stock_entry_count = defaultdict(int)
@@ -1406,10 +1408,14 @@ class TradingBot:
         self.is_running = True
         self.monitored_stocks = symbols
         self.logger.info(f"Starting trading for: {', '.join(symbols)}")
+        if self.top_gainers:
+            self.logger.info(f"Top Gainers (LONG only): {', '.join(self.top_gainers)}")
 
         print_success("\n" + "=" * 80)
         print_success("TRADING BOT IS NOW RUNNING")
         print_success(f"Monitoring {len(symbols)} stocks")
+        if self.top_gainers:
+            print_info(f"Top Gainers (LONG only): {', '.join(self.top_gainers)}")
         print_success(f"Capital: ₹{self.current_capital:,.0f} | Buying Power: ₹{self.buying_power:,.0f}")
         print_success("=" * 80 + "\n")
 
@@ -1539,13 +1545,18 @@ class TradingBot:
                                     print_success(f"   ✅ Trade opened successfully\n")
 
                         elif current_close < setup_low:
-                            quantity = self.calculate_position_size(current_close)
-                            if quantity > 0:
-                                print_success(f"\n🔴 SHORT ENTRY SIGNAL at {current_time.strftime('%H:%M:%S')}")
-                                print_info(f"   Entry: ₹{current_close:.2f} | SL: ₹{setup_high:.2f} | Qty: {quantity}")
-                                active_trade = self.enter_trade(symbol, 'SHORT', current_close, setup_high, quantity)
-                                if active_trade:
-                                    print_success(f"   ✅ Trade opened successfully\n")
+                            # Skip SHORT entries for Top Gainers stocks
+                            if symbol in self.top_gainers:
+                                print_info(f"\n⚠️  SHORT signal skipped for Top Gainer {symbol} at {current_time.strftime('%H:%M:%S')}")
+                                print_info(f"   Price: ₹{current_close:.2f} | Top Gainers only take LONG positions\n")
+                            else:
+                                quantity = self.calculate_position_size(current_close)
+                                if quantity > 0:
+                                    print_success(f"\n🔴 SHORT ENTRY SIGNAL at {current_time.strftime('%H:%M:%S')}")
+                                    print_info(f"   Entry: ₹{current_close:.2f} | SL: ₹{setup_high:.2f} | Qty: {quantity}")
+                                    active_trade = self.enter_trade(symbol, 'SHORT', current_close, setup_high, quantity)
+                                    if active_trade:
+                                        print_success(f"   ✅ Trade opened successfully\n")
 
                 # EOD exit
                 if active_trade:
@@ -1639,18 +1650,22 @@ class TradingBot:
 
                             # Check for SHORT breakout signal
                             elif current_close < setup_low:
-                                # Entry triggered - SHORT
-                                entry_price = current_close
-                                stop_loss = setup_high
-                                quantity = self.calculate_position_size(entry_price)
+                                # Skip SHORT entries for Top Gainers stocks
+                                if symbol in self.top_gainers:
+                                    self.logger.info(f"Skipping SHORT signal for Top Gainer {symbol} @ ₹{current_close:.2f}")
+                                else:
+                                    # Entry triggered - SHORT
+                                    entry_price = current_close
+                                    stop_loss = setup_high
+                                    quantity = self.calculate_position_size(entry_price)
 
-                                if quantity > 0:
-                                    self.logger.info(f"SHORT signal for {symbol} @ ₹{entry_price:.2f}")
-                                    trade = self.enter_trade(symbol, 'SHORT', entry_price, stop_loss, quantity)
-                                    if trade:
-                                        self.logger.info(f"Entered SHORT position in {symbol}")
-                                    else:
-                                        self.logger.warning(f"Failed to enter SHORT position in {symbol}")
+                                    if quantity > 0:
+                                        self.logger.info(f"SHORT signal for {symbol} @ ₹{entry_price:.2f}")
+                                        trade = self.enter_trade(symbol, 'SHORT', entry_price, stop_loss, quantity)
+                                        if trade:
+                                            self.logger.info(f"Entered SHORT position in {symbol}")
+                                        else:
+                                            self.logger.warning(f"Failed to enter SHORT position in {symbol}")
 
                         except Exception as e:
                             self.logger.error(f"Error checking entry for {symbol}: {str(e)}")
@@ -1768,8 +1783,12 @@ def get_margin_input() -> float:
     return capital
 
 
-def get_stocks_input() -> List[str]:
-    """Get stock symbols from user"""
+def get_stocks_input() -> Tuple[List[str], List[str]]:
+    """Get stock symbols from user and identify Top Gainers
+
+    Returns:
+        Tuple of (all_stocks, top_gainers_stocks)
+    """
     print_header("Stock Selection")
     print("Enter stock symbols (comma-separated)")
     print("Example: RELIANCE, TCS, INFY, HDFCBANK")
@@ -1782,8 +1801,33 @@ def get_stocks_input() -> List[str]:
         print_error("No stocks entered! Please try again.")
         sys.exit(1)
 
-    print_success(f"Selected {len(stocks)} stocks: {', '.join(stocks)}")
-    return stocks
+    print_success(f"Selected {len(stocks)} stocks: {', '.join(stocks)}\n")
+
+    # Ask which stocks are from Top Gainers
+    print_info("Top Gainers stocks will only take LONG positions (no short selling)")
+    print("Enter Top Gainers stocks (comma-separated), or press Enter to skip:")
+    print(f"Available stocks: {', '.join(stocks)}\n")
+
+    top_gainers_input = input(f"{Colors.BOLD}Enter Top Gainers stocks: {Colors.ENDC}").strip()
+    top_gainers = []
+
+    if top_gainers_input:
+        top_gainers = [s.strip().upper() for s in top_gainers_input.split(',') if s.strip()]
+        # Validate that all top gainers are in the main stock list
+        invalid_stocks = [s for s in top_gainers if s not in stocks]
+        if invalid_stocks:
+            print_warning(f"Warning: These stocks are not in your stock list: {', '.join(invalid_stocks)}")
+            top_gainers = [s for s in top_gainers if s in stocks]
+
+    if top_gainers:
+        print_success(f"Top Gainers (LONG only): {', '.join(top_gainers)}")
+        regular_stocks = [s for s in stocks if s not in top_gainers]
+        if regular_stocks:
+            print_info(f"Regular stocks (LONG & SHORT): {', '.join(regular_stocks)}")
+    else:
+        print_info("No Top Gainers specified. All stocks can take both LONG and SHORT positions.")
+
+    return stocks, top_gainers
 
 
 def get_exit_strategy() -> ExitStrategyConfig:
@@ -1857,7 +1901,7 @@ def main():
         leverage = TradingConfig.DEFAULT_LEVERAGE
         print_info(f"Leverage: {leverage}x | Buying Power: ₹{capital * leverage:,.0f}\n")
 
-        stocks = get_stocks_input()
+        stocks, top_gainers = get_stocks_input()
         exit_strategy = get_exit_strategy()
 
         # Confirm before starting
@@ -1868,6 +1912,8 @@ def main():
         print(f"Leverage: {leverage}x")
         print(f"Buying Power: ₹{capital * leverage:,.0f}")
         print(f"Stocks: {', '.join(stocks)}")
+        if top_gainers:
+            print(f"Top Gainers (LONG only): {', '.join(top_gainers)}")
         print(f"Exit Strategy: {exit_strategy}")
 
         confirm = input(f"\n{Colors.BOLD}Start trading bot? (yes/no): {Colors.ENDC}").strip().lower()
@@ -1876,7 +1922,8 @@ def main():
             sys.exit(0)
 
         # Initialize and run bot with trade_date
-        bot = TradingBot(capital=capital, leverage=leverage, exit_strategy=exit_strategy, trade_date=trade_date)
+        bot = TradingBot(capital=capital, leverage=leverage, exit_strategy=exit_strategy,
+                        trade_date=trade_date, top_gainers=top_gainers)
         bot.run(stocks)
 
     except KeyboardInterrupt:
