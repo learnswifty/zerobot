@@ -406,6 +406,8 @@ class TradingBot:
         self.stock_entry_count = defaultdict(int)
         self.failed_entry_attempts = defaultdict(int)  # Track consecutive failed entry attempts
         self.last_entry_attempt_time = {}  # Track last attempt time for exponential backoff
+        self.max_entries_logged = set()  # Track stocks for which we've logged max entries message
+        self.failed_instrument_token_attempts = defaultdict(int)  # Track failed instrument token lookups
         self.is_running = False
 
         # Setup signal handlers
@@ -413,10 +415,34 @@ class TradingBot:
 
         # Log system start
         self.logger.system_start(self.initial_capital, self.leverage)
-        self.db.log_system_event('INFO', 'SYSTEM_START', 
+        self.db.log_system_event('INFO', 'SYSTEM_START',
                                 f'Capital: ₹{capital:,.0f}, Leverage: {leverage}x')
         if TradingConfig.ENABLE_PAPER_TRADING:
             self.logger.info("[PAPER] Paper trading mode is ENABLED. No live orders will be placed.")
+
+        # CRITICAL: Display config values at startup for verification
+        self.logger.info(f"⚙️  CONFIG: MAX_STOP_LOSS = {TradingConfig.MAX_STOP_LOSS_PERCENT}% | MIN_STOP_LOSS = {TradingConfig.MIN_STOP_LOSS_PERCENT}%")
+        self.logger.info(f"⚙️  CONFIG: MAX_ENTRIES_PER_STOCK = {TradingConfig.MAX_ENTRIES_PER_STOCK} | MAX_OPEN_POSITIONS = {TradingConfig.MAX_OPEN_POSITIONS}")
+        print_info(f"⚙️  Stop Loss Limits: {TradingConfig.MIN_STOP_LOSS_PERCENT}% - {TradingConfig.MAX_STOP_LOSS_PERCENT}%")
+
+        # CRITICAL: Refuse to run with incorrect config (prevents stale Python cache issues)
+        if TradingConfig.MAX_STOP_LOSS_PERCENT < 5.0:
+            print_error(f"\n{'='*80}")
+            print_error(f"❌ CRITICAL ERROR: Invalid Configuration Detected!")
+            print_error(f"❌ MAX_STOP_LOSS_PERCENT = {TradingConfig.MAX_STOP_LOSS_PERCENT}% (expected 7.0%)")
+            print_error(f"{'='*80}")
+            print_error(f"\n🔍 Root Cause: You are running with STALE Python bytecode cache")
+            print_error(f"\n✅ Solution:")
+            print_error(f"   1. Kill this process (CTRL+C)")
+            print_error(f"   2. Run: ./start_bot.sh")
+            print_error(f"   OR manually:")
+            print_error(f"   1. rm -rf __pycache__")
+            print_error(f"   2. pkill -f trading_bot.py")
+            print_error(f"   3. python3 verify_config.py (verify shows 7.0%)")
+            print_error(f"   4. python3 trading_bot.py")
+            print_error(f"\n{'='*80}\n")
+            self.logger.critical(f"Bot startup ABORTED due to invalid config: MAX_STOP_LOSS_PERCENT={TradingConfig.MAX_STOP_LOSS_PERCENT}%")
+            sys.exit(1)
 
     def _init_kite_connect(self) -> KiteConnect:
         """Initialize and authenticate Kite Connect"""
@@ -584,9 +610,15 @@ class TradingBot:
                 self.logger.info(f"Exiting position for {symbol} via command @ ₹{ltp:.2f}")
                 self.exit_trade(trade, ltp, "EXIT_COMMAND")
 
+                # CRITICAL: Auto-stop stock after manual exit to prevent immediate re-entry
+                self.command_handler.stopped_stocks.add(symbol)
+                self.logger.info(f"{symbol} auto-stopped after manual exit (prevents re-entry)")
+
                 print(f"{Colors.OKGREEN}✓ Position closed for {symbol}{Colors.ENDC}")
                 print(f"  Exit Price: ₹{ltp:.2f}")
                 print(f"  P&L: ₹{trade.pnl:.2f} ({trade.pnl_percent:.2f}%)\n")
+                print(f"{Colors.WARNING}ℹ  {symbol} auto-stopped to prevent re-entry{Colors.ENDC}")
+                print(f"{Colors.WARNING}   Use 'resume {symbol}' to re-enable monitoring{Colors.ENDC}\n")
 
             except Exception as e:
                 print(f"{Colors.FAIL}✗ Failed to exit position for {symbol}: {str(e)}{Colors.ENDC}")
@@ -652,12 +684,17 @@ class TradingBot:
                 backoff_seconds = min(30 * (2 ** (self.failed_entry_attempts[symbol] - 1)), 300)
                 time_since_last = time.time() - self.last_entry_attempt_time[symbol]
                 if time_since_last < backoff_seconds:
+                    remaining = backoff_seconds - time_since_last
+                    self.logger.debug(f"{symbol} in backoff: {remaining:.0f}s remaining (attempt {self.failed_entry_attempts[symbol]})")
                     return False  # Still in backoff period
 
         # Check per-stock entry limit
         entries_today = self.db.get_trade_count_for_stock(symbol, self.today_date)
         if entries_today >= TradingConfig.MAX_ENTRIES_PER_STOCK:
-            self.logger.info(f"{symbol} reached max entries for today: {entries_today}")
+            # Only log once per stock to avoid spam
+            if symbol not in self.max_entries_logged:
+                self.logger.info(f"{symbol} reached max entries for today: {entries_today}")
+                self.max_entries_logged.add(symbol)
             return False
 
         return True
@@ -672,10 +709,28 @@ class TradingBot:
             instruments = self.kite.instruments(TradingConfig.DEFAULT_EXCHANGE)
             for inst in instruments:
                 if inst['tradingsymbol'] == symbol and inst['segment'] == TradingConfig.DEFAULT_EXCHANGE:
+                    # Reset failure counter on success
+                    if symbol in self.failed_instrument_token_attempts:
+                        self.failed_instrument_token_attempts[symbol] = 0
                     return inst['instrument_token']
             return None
         except Exception as e:
-            self.logger.error(f"Error fetching instrument token for {symbol}: {str(e)}")
+            error_msg = str(e)
+
+            # Track failed attempts
+            self.failed_instrument_token_attempts[symbol] += 1
+
+            # Auto-stop stock after repeated failures to prevent API spam
+            if self.failed_instrument_token_attempts[symbol] >= 3:
+                if symbol not in self.command_handler.stopped_stocks:
+                    self.command_handler.stopped_stocks.add(symbol)
+                    self.logger.warning(f"{symbol} auto-stopped after {self.failed_instrument_token_attempts[symbol]} failed instrument token lookups")
+                    print_warning(f"⚠ {symbol} auto-stopped: API errors (check symbol name or rate limits)")
+                # Don't log further errors for this symbol
+                return None
+
+            # Log error only for first few attempts
+            self.logger.error(f"Error fetching instrument token for {symbol} (attempt {self.failed_instrument_token_attempts[symbol]}): {error_msg}")
             return None
 
     def fetch_historical_data(self, instrument_token: int, days: int = 1) -> Optional[pd.DataFrame]:
@@ -1132,7 +1187,9 @@ class TradingBot:
         # Log trade exit (using net P&L)
         self.logger.trade_exit(trade.symbol, trade.direction, trade.quantity,
                               trade.entry_price, trade.exit_price,
-                              net_pnl, reason)
+                              net_pnl, reason,
+                              entry_time=trade.entry_time,
+                              exit_time=trade.exit_time)
 
         return True
 
@@ -1492,6 +1549,14 @@ class TradingBot:
         print(f"  Daily Trades: {self.daily_trades_count} / {TradingConfig.MAX_DAILY_TRADES}")
         print(f"  Open Positions: {len(self.active_trades)} / {TradingConfig.MAX_OPEN_POSITIONS}")
         print(f"  Circuit Breaker: {'🔴 TRIGGERED' if self.circuit_breaker.triggered else '🟢 Active'}")
+
+        # Config verification
+        print(f"\n{Colors.BOLD}⚙️  Configuration:{Colors.ENDC}")
+        print(f"  Stop Loss Range: {TradingConfig.MIN_STOP_LOSS_PERCENT}% - {TradingConfig.MAX_STOP_LOSS_PERCENT}%")
+        print(f"  Max Entries/Stock: {TradingConfig.MAX_ENTRIES_PER_STOCK}")
+        if TradingConfig.MAX_STOP_LOSS_PERCENT < 5.0:
+            print(f"  {Colors.FAIL}⚠️  WARNING: MAX_STOP_LOSS_PERCENT seems low ({TradingConfig.MAX_STOP_LOSS_PERCENT}%){Colors.ENDC}")
+            print(f"  {Colors.FAIL}⚠️  Expected: 7.0%. You may need to restart the bot!{Colors.ENDC}")
 
         print(f"\n{Colors.BOLD}{Colors.OKCYAN}{'=' * 80}{Colors.ENDC}\n")
 
