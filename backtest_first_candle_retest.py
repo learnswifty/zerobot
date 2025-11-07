@@ -21,12 +21,9 @@ from collections import defaultdict
 
 # Import from existing modules
 from config import TradingConfig, ExitStrategyConfig
-from logger import get_logger
+from logger import get_logger, print_info, print_success, print_warning, print_error, Colors
 from database import TradingDatabase
-from utils import (
-    today_ist, current_time_ist, print_info, print_success,
-    print_warning, print_error, Colors
-)
+from timezone_utils import today_ist, current_time_ist, now_ist
 from kiteconnect import KiteConnect
 
 
