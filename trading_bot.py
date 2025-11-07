@@ -407,6 +407,7 @@ class TradingBot:
         self.failed_entry_attempts = defaultdict(int)  # Track consecutive failed entry attempts
         self.last_entry_attempt_time = {}  # Track last attempt time for exponential backoff
         self.max_entries_logged = set()  # Track stocks for which we've logged max entries message
+        self.failed_instrument_token_attempts = defaultdict(int)  # Track failed instrument token lookups
         self.is_running = False
 
         # Setup signal handlers
@@ -695,10 +696,28 @@ class TradingBot:
             instruments = self.kite.instruments(TradingConfig.DEFAULT_EXCHANGE)
             for inst in instruments:
                 if inst['tradingsymbol'] == symbol and inst['segment'] == TradingConfig.DEFAULT_EXCHANGE:
+                    # Reset failure counter on success
+                    if symbol in self.failed_instrument_token_attempts:
+                        self.failed_instrument_token_attempts[symbol] = 0
                     return inst['instrument_token']
             return None
         except Exception as e:
-            self.logger.error(f"Error fetching instrument token for {symbol}: {str(e)}")
+            error_msg = str(e)
+
+            # Track failed attempts
+            self.failed_instrument_token_attempts[symbol] += 1
+
+            # Auto-stop stock after repeated failures to prevent API spam
+            if self.failed_instrument_token_attempts[symbol] >= 3:
+                if symbol not in self.command_handler.stopped_stocks:
+                    self.command_handler.stopped_stocks.add(symbol)
+                    self.logger.warning(f"{symbol} auto-stopped after {self.failed_instrument_token_attempts[symbol]} failed instrument token lookups")
+                    print_warning(f"⚠ {symbol} auto-stopped: API errors (check symbol name or rate limits)")
+                # Don't log further errors for this symbol
+                return None
+
+            # Log error only for first few attempts
+            self.logger.error(f"Error fetching instrument token for {symbol} (attempt {self.failed_instrument_token_attempts[symbol]}): {error_msg}")
             return None
 
     def fetch_historical_data(self, instrument_token: int, days: int = 1) -> Optional[pd.DataFrame]:
