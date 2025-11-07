@@ -47,8 +47,8 @@ class TradingConfig:
     MARKET_CLOSE_TIME = dt_time(15, 30)  # NSE/BSE closes at 3:30 PM
 
     TRADING_START_TIME = dt_time(9, 15)  # Start trading from market open
-    TRADING_END_TIME = dt_time(14, 55)   # Stop taking new positions
-    FORCE_EXIT_TIME = dt_time(15, 15)    # Force exit all positions
+    TRADING_END_TIME = dt_time(14, 30)   # Stop taking new positions
+    FORCE_EXIT_TIME = dt_time(14, 45)    # Force exit all positions
 
     # ==================== API SETTINGS ====================
     # Zerodha Kite Connect rate limits
