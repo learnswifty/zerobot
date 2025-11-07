@@ -3,11 +3,11 @@
 First Candle Breakout Retest Strategy - Backtest
 ================================================
 
-Strategy Logic (Simplified 2-Candle Pattern):
+Strategy Logic (2-Candle Pattern):
 1. First Candle (09:15-09:20): Strong green candle, body > 0.3% (no upper limit)
-2. Second Candle (09:20-09:25): Retest - touches/breaks first candle low, holds support
+2. Second Candle (09:20-09:25): Red candle that closes near first candle high (±0.5%)
 
-Entry: When price breaks above first candle high (after retest confirmation)
+Entry: When price breaks above first candle high
 Exit: Trailing SL, RR target, or time-based exit
 """
 
@@ -64,7 +64,7 @@ class FirstCandleRetestBacktest:
     """Backtest engine for First Red Candle Breakout strategy"""
 
     # Strategy parameters
-    RETEST_TOLERANCE = 0.5  # % below first low for valid retest
+    CLOSE_MATCH_TOLERANCE = 0.5  # % variation allowed for second candle close vs first candle high
 
     def __init__(self, capital: float, trade_date: str,
                  exit_strategy: ExitStrategyConfig = None):
@@ -172,18 +172,14 @@ class FirstCandleRetestBacktest:
 
     def identify_first_red_candle(self, df: pd.DataFrame) -> Optional[Dict]:
         """
-        Identify First Red Candle for breakout trading
+        Identify First Red Candle pattern for breakout trading
 
         Strategy:
-        1. First candle: Strong move (red or green)
-        2. Second candle: Retest/pullback
-        3. Entry: When price breaks first candle high/low (no need for third candle confirmation)
+        1. First candle: Strong green candle (body > 0.3%)
+        2. Second candle: Red candle that closes near first candle high (±0.5%)
+        3. Entry: When price breaks first candle high
 
-        Returns dict with:
-        - first_candle: Dict with OHLC, body%, volume
-        - second_candle: Dict with retest info
-        - setup_high: Breakout level for LONG
-        - setup_low: Breakout level for SHORT
+        Returns dict with pattern details or None if pattern not found
         """
         if len(df) < 2:
             return None
@@ -265,50 +261,36 @@ class FirstCandleRetestBacktest:
             return None
         print_success(f"   ✓ First candle body {body_percent:.2f}% shows momentum")
 
-        # Optional: Check if closes reasonably near high (not mandatory)
-        upper_wick = c1['upper_wick']
-        body_size = c1['body_size']
-        wick_ratio = (upper_wick / body_size) if body_size > 0 else 0
-        if wick_ratio > 1.0:  # Only reject if wick is larger than body
-            print_warning(f"   ⚠️  Upper wick larger than body ({wick_ratio*100:.0f}%), but acceptable")
-        print_success(f"   ✓ First candle structure acceptable (upper wick {wick_ratio*100:.0f}% of body)")
-
         # Volume check is optional - just log it
         volume_ratio = first_volume / avg_volume if avg_volume > 0 else 1
         print_success(f"   ✓ Volume: {volume_ratio:.1f}x average")
 
-        # === STEP 2: Validate Second Candle (Retest) ===
+        # === STEP 2: Validate Second Candle ===
         second_open = c2['open']
         second_close = c2['close']
         second_high = c2['high']
         second_low = c2['low']
 
-        # Should retest (touch or go below) first candle's low
-        retest_threshold = first_low * (1 - self.RETEST_TOLERANCE / 100)
-        retest_distance = ((first_low - second_low) / first_low) * 100
-
-        # Valid retest: low should be near or below first candle's low
-        if second_low > first_low:
-            # Even if not below, should at least test the low closely
-            if second_low > first_low * 1.002:  # Within 0.2% of first low
-                print_warning(f"   ❌ Second candle low (₹{second_low:.2f}) doesn't retest first candle low (₹{first_low:.2f})")
-                print_warning(f"      Distance: {((second_low - first_low) / first_low * 100):.2f}% above (need < 0.2%)")
-                return None
-            print_success(f"   ✓ Second candle retests first low (within 0.2%)")
-        else:
-            print_success(f"   ✓ Second candle breaks below first low by {abs(retest_distance):.2f}%")
-
-        # Should not close way below (would invalidate the setup)
-        if second_close < retest_threshold:
-            print_warning(f"   ❌ Second candle closes too far below (₹{second_close:.2f} < ₹{retest_threshold:.2f})")
-            print_warning(f"      Tolerance: 0.5% below first low")
+        # Must be red (bearish pullback)
+        if second_close >= second_open:
+            print_warning(f"   ❌ Second candle must be RED (currently {c2['color']})")
             return None
-        print_success(f"   ✓ Second candle holds support (doesn't close too far below)")
+        print_success(f"   ✓ Second candle is RED (pullback)")
+
+        # Second candle close should match first candle high (±0.5% tolerance)
+        close_to_high_diff = abs(second_close - first_high)
+        close_to_high_percent = (close_to_high_diff / first_high) * 100
+
+        if close_to_high_percent > self.CLOSE_MATCH_TOLERANCE:
+            print_warning(f"   ❌ Second candle close (₹{second_close:.2f}) doesn't match first candle high (₹{first_high:.2f})")
+            print_warning(f"      Difference: {close_to_high_percent:.2f}% (need ≤ {self.CLOSE_MATCH_TOLERANCE}%)")
+            return None
+        print_success(f"   ✓ Second candle close matches first high (±{close_to_high_percent:.2f}%)")
 
         # === PATTERN CONFIRMED - Entry on breakout ===
         print_success(f"\n✅ PATTERN FOUND - Will enter when price breaks ₹{first_high:.2f}")
         entry_price = first_high * 1.001  # Slightly above first candle high
-        stop_loss = first_low * 0.999  # Slightly below first candle low
+        stop_loss = second_low * 0.999  # Slightly below second candle low
 
         # Calculate stop loss percentage
         sl_percent = ((entry_price - stop_loss) / entry_price) * 100
@@ -334,9 +316,11 @@ class FirstCandleRetestBacktest:
             },
             'second_candle': {
                 'time': candle2['datetime'],
+                'open': second_open,
+                'high': second_high,
                 'low': second_low,
                 'close': second_close,
-                'retest_depth': ((first_low - second_low) / first_low) * 100 if second_low < first_low else 0
+                'close_match_percent': close_to_high_percent
             },
             'entry_price': entry_price,
             'stop_loss': stop_loss,
@@ -498,10 +482,10 @@ class FirstCandleRetestBacktest:
 
                 # Display pattern details
                 print_success(f"\n✅ Pattern Identified!")
-                print_info(f"   Candle 1 (09:15): Body {pattern['first_candle']['body_percent']:.2f}% | "
-                          f"High: ₹{pattern['first_candle']['high']:.2f} | Low: ₹{pattern['first_candle']['low']:.2f}")
-                print_info(f"   Candle 2 (09:20): Retest depth {pattern['second_candle']['retest_depth']:.2f}% | "
-                          f"Low: ₹{pattern['second_candle']['low']:.2f}")
+                print_info(f"   Candle 1 (09:15): GREEN | Body {pattern['first_candle']['body_percent']:.2f}% | "
+                          f"High: ₹{pattern['first_candle']['high']:.2f}")
+                print_info(f"   Candle 2 (09:20): RED | Close: ₹{pattern['second_candle']['close']:.2f} | "
+                          f"Match: ±{pattern['second_candle']['close_match_percent']:.2f}%")
                 print_info(f"\n   Entry: ₹{pattern['entry_price']:.2f} | SL: ₹{pattern['stop_loss']:.2f} ({pattern['sl_percent']:.2f}%)")
 
                 # === STEP 2: Enter Trade ===
