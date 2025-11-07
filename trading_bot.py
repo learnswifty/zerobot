@@ -585,9 +585,15 @@ class TradingBot:
                 self.logger.info(f"Exiting position for {symbol} via command @ ₹{ltp:.2f}")
                 self.exit_trade(trade, ltp, "EXIT_COMMAND")
 
+                # CRITICAL: Auto-stop stock after manual exit to prevent immediate re-entry
+                self.command_handler.stopped_stocks.add(symbol)
+                self.logger.info(f"{symbol} auto-stopped after manual exit (prevents re-entry)")
+
                 print(f"{Colors.OKGREEN}✓ Position closed for {symbol}{Colors.ENDC}")
                 print(f"  Exit Price: ₹{ltp:.2f}")
                 print(f"  P&L: ₹{trade.pnl:.2f} ({trade.pnl_percent:.2f}%)\n")
+                print(f"{Colors.WARNING}ℹ  {symbol} auto-stopped to prevent re-entry{Colors.ENDC}")
+                print(f"{Colors.WARNING}   Use 'resume {symbol}' to re-enable monitoring{Colors.ENDC}\n")
 
             except Exception as e:
                 print(f"{Colors.FAIL}✗ Failed to exit position for {symbol}: {str(e)}{Colors.ENDC}")
