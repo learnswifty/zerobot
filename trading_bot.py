@@ -403,6 +403,8 @@ class TradingBot:
         self.today_date = trade_date if trade_date else today_ist().isoformat()
         self.daily_trades_count = 0
         self.stock_entry_count = defaultdict(int)
+        self.failed_entry_attempts = defaultdict(int)  # Track consecutive failed entry attempts
+        self.last_entry_attempt_time = {}  # Track last attempt time for exponential backoff
         self.is_running = False
 
         # Setup signal handlers
@@ -537,6 +539,15 @@ class TradingBot:
 
         def handle_exit_position(symbol: str):
             """Exit position for a specific stock"""
+            # Validate symbol is monitored
+            if symbol not in self.monitored_stocks:
+                print(f"{Colors.FAIL}✗ {symbol} is not a monitored stock{Colors.ENDC}")
+                if self.monitored_stocks:
+                    print(f"  Available stocks: {', '.join(self.monitored_stocks)}")
+                self.logger.warning(f"Exit command for unknown stock: {symbol}")
+                return
+
+            # Check if position exists
             if symbol not in self.active_trades:
                 print(f"{Colors.WARNING}⚠ No active position found for {symbol}{Colors.ENDC}")
                 self.logger.warning(f"Exit command for {symbol} - no active position")
@@ -613,6 +624,16 @@ class TradingBot:
         # Check if stock already has open position
         if symbol in self.active_trades:
             return False
+
+        # Check exponential backoff for failed attempts
+        if symbol in self.failed_entry_attempts and self.failed_entry_attempts[symbol] > 0:
+            if symbol in self.last_entry_attempt_time:
+                import time
+                # Exponential backoff: 30s, 60s, 120s, etc.
+                backoff_seconds = min(30 * (2 ** (self.failed_entry_attempts[symbol] - 1)), 300)
+                time_since_last = time.time() - self.last_entry_attempt_time[symbol]
+                if time_since_last < backoff_seconds:
+                    return False  # Still in backoff period
 
         # Check per-stock entry limit
         entries_today = self.db.get_trade_count_for_stock(symbol, self.today_date)
@@ -859,6 +880,18 @@ class TradingBot:
 
         if sl_percent > TradingConfig.MAX_STOP_LOSS_PERCENT:
             self.logger.error(f"Stop loss too wide: {sl_percent:.2f}% > {TradingConfig.MAX_STOP_LOSS_PERCENT}%")
+
+            # Track failed attempts
+            import time
+            self.failed_entry_attempts[symbol] += 1
+            self.last_entry_attempt_time[symbol] = time.time()
+
+            # After 3 consecutive failures, stop monitoring the stock temporarily
+            if self.failed_entry_attempts[symbol] >= 3:
+                self.logger.warning(f"{symbol} stopped after {self.failed_entry_attempts[symbol]} failed attempts - stop loss consistently too wide")
+                self.command_handler.stopped_stocks.add(symbol)
+                print_warning(f"⚠ {symbol} auto-stopped: Stop loss too wide ({sl_percent:.2f}% > {TradingConfig.MAX_STOP_LOSS_PERCENT}%)")
+
             return None
 
         # Calculate target if using RR
@@ -933,6 +966,10 @@ class TradingBot:
         self.active_trades[symbol] = trade
         self.daily_trades_count += 1
         self.stock_entry_count[symbol] += 1
+
+        # Reset failed attempts counter on successful entry
+        if symbol in self.failed_entry_attempts:
+            self.failed_entry_attempts[symbol] = 0
 
         # Log trade entry
         self.logger.trade_entry(symbol, direction, quantity, entry_price, 

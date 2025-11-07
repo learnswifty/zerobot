@@ -26,7 +26,7 @@ class TradingConfig:
     MAX_OPEN_POSITIONS = 5           # Maximum simultaneous positions
 
     # Stop loss
-    MAX_STOP_LOSS_PERCENT = 5.0      # Maximum stop loss per trade
+    MAX_STOP_LOSS_PERCENT = 7.0      # Maximum stop loss per trade (increased for volatile stocks)
     MIN_STOP_LOSS_PERCENT = 0.5      # Minimum stop loss per trade
 
     # ==================== STRATEGY PARAMETERS ====================
