@@ -414,10 +414,21 @@ class TradingBot:
 
         # Log system start
         self.logger.system_start(self.initial_capital, self.leverage)
-        self.db.log_system_event('INFO', 'SYSTEM_START', 
+        self.db.log_system_event('INFO', 'SYSTEM_START',
                                 f'Capital: ₹{capital:,.0f}, Leverage: {leverage}x')
         if TradingConfig.ENABLE_PAPER_TRADING:
             self.logger.info("[PAPER] Paper trading mode is ENABLED. No live orders will be placed.")
+
+        # CRITICAL: Display config values at startup for verification
+        self.logger.info(f"⚙️  CONFIG: MAX_STOP_LOSS = {TradingConfig.MAX_STOP_LOSS_PERCENT}% | MIN_STOP_LOSS = {TradingConfig.MIN_STOP_LOSS_PERCENT}%")
+        self.logger.info(f"⚙️  CONFIG: MAX_ENTRIES_PER_STOCK = {TradingConfig.MAX_ENTRIES_PER_STOCK} | MAX_OPEN_POSITIONS = {TradingConfig.MAX_OPEN_POSITIONS}")
+        print_info(f"⚙️  Stop Loss Limits: {TradingConfig.MIN_STOP_LOSS_PERCENT}% - {TradingConfig.MAX_STOP_LOSS_PERCENT}%")
+
+        # Verify config is not using old defaults
+        if TradingConfig.MAX_STOP_LOSS_PERCENT < 5.0:
+            print_warning(f"⚠️  WARNING: MAX_STOP_LOSS_PERCENT is {TradingConfig.MAX_STOP_LOSS_PERCENT}% (expected 7.0%)")
+            print_warning(f"⚠️  You may be running an old Python process with cached imports!")
+            print_warning(f"⚠️  Solution: Kill this process and restart the bot in a fresh terminal")
 
     def _init_kite_connect(self) -> KiteConnect:
         """Initialize and authenticate Kite Connect"""
@@ -1506,6 +1517,14 @@ class TradingBot:
         print(f"  Daily Trades: {self.daily_trades_count} / {TradingConfig.MAX_DAILY_TRADES}")
         print(f"  Open Positions: {len(self.active_trades)} / {TradingConfig.MAX_OPEN_POSITIONS}")
         print(f"  Circuit Breaker: {'🔴 TRIGGERED' if self.circuit_breaker.triggered else '🟢 Active'}")
+
+        # Config verification
+        print(f"\n{Colors.BOLD}⚙️  Configuration:{Colors.ENDC}")
+        print(f"  Stop Loss Range: {TradingConfig.MIN_STOP_LOSS_PERCENT}% - {TradingConfig.MAX_STOP_LOSS_PERCENT}%")
+        print(f"  Max Entries/Stock: {TradingConfig.MAX_ENTRIES_PER_STOCK}")
+        if TradingConfig.MAX_STOP_LOSS_PERCENT < 5.0:
+            print(f"  {Colors.FAIL}⚠️  WARNING: MAX_STOP_LOSS_PERCENT seems low ({TradingConfig.MAX_STOP_LOSS_PERCENT}%){Colors.ENDC}")
+            print(f"  {Colors.FAIL}⚠️  Expected: 7.0%. You may need to restart the bot!{Colors.ENDC}")
 
         print(f"\n{Colors.BOLD}{Colors.OKCYAN}{'=' * 80}{Colors.ENDC}\n")
 
