@@ -124,9 +124,16 @@ class FirstCandleRetestBacktest:
             return None
 
     def fetch_historical_data(self, instrument_token: int, from_date: datetime,
-                             to_date: datetime) -> Optional[pd.DataFrame]:
+                             to_date: datetime, symbol: str = "") -> Optional[pd.DataFrame]:
         """Fetch historical 5-minute data"""
         try:
+            print_info(f"\n📡 Fetching data from Zerodha API:")
+            print_info(f"   Symbol: {symbol}")
+            print_info(f"   Instrument Token: {instrument_token}")
+            print_info(f"   From: {from_date.strftime('%Y-%m-%d %H:%M:%S')}")
+            print_info(f"   To: {to_date.strftime('%Y-%m-%d %H:%M:%S')}")
+            print_info(f"   Interval: 5minute")
+
             # Zerodha expects IST dates
             data = self.kite.historical_data(
                 instrument_token=instrument_token,
@@ -136,15 +143,28 @@ class FirstCandleRetestBacktest:
             )
 
             if not data:
+                print_warning(f"   ⚠️  No data returned from API")
                 return None
+
+            print_success(f"   ✓ Received {len(data)} candles from API")
 
             df = pd.DataFrame(data)
             df['datetime'] = pd.to_datetime(df['date'])
             df = df.sort_values('datetime').reset_index(drop=True)
+
+            # Show first few raw candles for verification
+            print_info(f"\n📋 First 5 candles (raw from API):")
+            for i in range(min(5, len(df))):
+                row = df.iloc[i]
+                color = "🟢" if row['close'] > row['open'] else "🔴" if row['close'] < row['open'] else "⚪"
+                print_info(f"   {i+1}. {row['datetime'].strftime('%Y-%m-%d %H:%M')} {color} | "
+                          f"O:{row['open']:.2f} H:{row['high']:.2f} L:{row['low']:.2f} C:{row['close']:.2f} V:{row['volume']:,}")
+
             return df
 
         except Exception as e:
             self.logger.error(f"Error fetching historical data: {str(e)}")
+            print_error(f"❌ API Error: {str(e)}")
             return None
 
     def calculate_position_size(self, price: float) -> int:
@@ -500,11 +520,13 @@ class FirstCandleRetestBacktest:
                     print_warning(f"❌ Could not find instrument token for {symbol}")
                     continue
 
+                print_success(f"✓ Found instrument token: {instrument_token}")
+
                 # Fetch 5-minute data for the day
                 from_date = trade_date
                 to_date = trade_date + timedelta(days=1)
 
-                df = self.fetch_historical_data(instrument_token, from_date, to_date)
+                df = self.fetch_historical_data(instrument_token, from_date, to_date, symbol)
                 if df is None or len(df) == 0:
                     print_warning(f"❌ No data for {symbol}")
                     continue
@@ -515,7 +537,12 @@ class FirstCandleRetestBacktest:
                     print_warning(f"❌ Insufficient candles for {symbol}")
                     continue
 
-                print_success(f"✓ Loaded {len(df)} candles")
+                print_success(f"✓ Loaded {len(df)} candles for {trade_date.date()}")
+                print_info(f"\n💡 To verify on Zerodha Chart:")
+                print_info(f"   1. Open Kite chart for {symbol}")
+                print_info(f"   2. Set timeframe to 5 minute")
+                print_info(f"   3. Go to date: {trade_date.strftime('%d %b %Y')}")
+                print_info(f"   4. Compare OHLC values shown below")
 
                 # === STEP 1: Identify Pattern ===
                 pattern = self.identify_first_candle_retest_pattern(df)
