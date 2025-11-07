@@ -23,6 +23,7 @@ class CommandHandler:
         self.callbacks = {
             'on_stop_stock': None,
             'on_resume_stock': None,
+            'on_add_stock': None,
             'on_status': None,
             'on_shutdown': None,
             'on_emergency_stop': None,
@@ -43,6 +44,7 @@ class CommandHandler:
         print(f"{Colors.BOLD}{Colors.OKCYAN}📟 COMMAND INTERFACE ACTIVE{Colors.ENDC}")
         print(f"{Colors.OKCYAN}{'=' * 80}{Colors.ENDC}")
         print(f"{Colors.OKBLUE}Available Commands:{Colors.ENDC}")
+        print(f"  {Colors.BOLD}add <SYMBOL>{Colors.ENDC}      - Add a new stock to monitor (e.g., add INFY)")
         print(f"  {Colors.BOLD}stop <SYMBOL>{Colors.ENDC}     - Stop monitoring a stock (e.g., stop RELIANCE)")
         print(f"  {Colors.BOLD}resume <SYMBOL>{Colors.ENDC}   - Resume monitoring a stock (e.g., resume RELIANCE)")
         print(f"  {Colors.BOLD}stop all{Colors.ENDC}          - Stop monitoring all stocks")
@@ -85,8 +87,17 @@ class CommandHandler:
 
         cmd = parts[0]
 
+        # ADD command
+        if cmd == 'add':
+            if len(parts) < 2:
+                print(f"{Colors.WARNING}Usage: add <SYMBOL>{Colors.ENDC}")
+                return
+
+            symbol = parts[1].upper()
+            self._add_stock(symbol)
+
         # STOP command
-        if cmd == 'stop':
+        elif cmd == 'stop':
             if len(parts) < 2:
                 print(f"{Colors.WARNING}Usage: stop <SYMBOL> or stop all{Colors.ENDC}")
                 return
@@ -139,6 +150,15 @@ class CommandHandler:
         else:
             print(f"{Colors.FAIL}Unknown command: {cmd}{Colors.ENDC}")
             print(f"Type {Colors.BOLD}'help'{Colors.ENDC} for available commands")
+
+    def _add_stock(self, symbol: str):
+        """Add a new stock to monitor"""
+        print(f"{Colors.OKGREEN}➕ Adding stock: {symbol}{Colors.ENDC}")
+        self.logger.info(f"Adding stock {symbol} via command")
+
+        # Trigger callback
+        if self.callbacks['on_add_stock']:
+            self.callbacks['on_add_stock'](symbol)
 
     def _stop_stock(self, symbol: str):
         """Stop monitoring a specific stock"""
@@ -208,6 +228,8 @@ class CommandHandler:
     def _show_help(self):
         """Show help message"""
         print(f"\n{Colors.BOLD}Available Commands:{Colors.ENDC}")
+        print(f"  {Colors.BOLD}add <SYMBOL>{Colors.ENDC}      - Add a new stock to monitor")
+        print(f"                      Example: add INFY")
         print(f"  {Colors.BOLD}stop <SYMBOL>{Colors.ENDC}     - Stop monitoring a stock")
         print(f"                      Example: stop RELIANCE")
         print(f"  {Colors.BOLD}resume <SYMBOL>{Colors.ENDC}   - Resume monitoring a stock")
