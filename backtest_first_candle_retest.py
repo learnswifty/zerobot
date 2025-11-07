@@ -354,8 +354,11 @@ class FirstCandleRetestBacktest:
         # Calculate position value
         position_value = entry_price * quantity
 
+        # Format entry time
+        entry_time_str = pattern['pattern_time'].strftime('%H:%M:%S')
+
         # Log entry
-        self.logger.info(f"🔵 ENTRY | {symbol} | LONG | Qty: {quantity} | "
+        self.logger.info(f"🔵 ENTRY | {symbol} | LONG | Time: {entry_time_str} | Qty: {quantity} | "
                         f"Entry: ₹{entry_price:.2f} | SL: ₹{stop_loss:.2f} ({pattern['sl_percent']:.2f}%) | "
                         f"Position: ₹{position_value:,.0f}")
         if target_price:
@@ -402,14 +405,30 @@ class FirstCandleRetestBacktest:
         hours = minutes // 60
         mins = minutes % 60
 
+        # Format times
+        entry_time_str = trade.entry_time.strftime('%H:%M:%S')
+        exit_time_str = trade.exit_time.strftime('%H:%M:%S')
+
         # Log exit
         pnl_symbol = "🟢" if net_pnl > 0 else "🔴"
         duration_str = f"{hours}h {mins}m" if hours > 0 else f"{mins}m"
 
         self.logger.info(f"{pnl_symbol} EXIT | {trade.symbol} | LONG | "
+                        f"Entry Time: {entry_time_str} | Exit Time: {exit_time_str} | "
                         f"Entry: ₹{trade.entry_price:.2f} | Exit: ₹{exit_price:.2f} | "
-                        f"P&L: ₹{net_pnl:.2f} ({trade.pnl_percent:+.2f}%) | "
                         f"Duration: {duration_str} | Reason: {reason}")
+
+        # Log P&L breakdown
+        self.logger.info(f"   Gross P&L: ₹{gross_pnl:.2f}")
+        self.logger.info(f"   Charges Breakdown:")
+        self.logger.info(f"      Brokerage:          ₹{brokerage:.2f}")
+        self.logger.info(f"      STT (0.025%):       ₹{stt:.2f}")
+        self.logger.info(f"      Transaction:        ₹{transaction_charges:.2f}")
+        self.logger.info(f"      GST (18%):          ₹{gst:.2f}")
+        self.logger.info(f"      SEBI:               ₹{sebi_charges:.2f}")
+        self.logger.info(f"      Stamp Duty:         ₹{stamp_duty:.2f}")
+        self.logger.info(f"   Total Charges:         ₹{total_charges:.2f}")
+        self.logger.info(f"   {pnl_symbol} Net P&L: ₹{net_pnl:.2f} ({trade.pnl_percent:+.2f}%)")
 
         return True
 
