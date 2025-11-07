@@ -290,7 +290,7 @@ class FirstCandleRetestBacktest:
         # === PATTERN CONFIRMED - Entry on breakout ===
         print_success(f"\n✅ PATTERN FOUND - Will enter when price breaks ₹{first_high:.2f}")
         entry_price = first_high * 1.001  # Slightly above first candle high
-        stop_loss = second_low * 0.999  # Slightly below second candle low
+        stop_loss = first_low * 0.999  # Slightly below first candle low
 
         # Calculate stop loss percentage
         sl_percent = ((entry_price - stop_loss) / entry_price) * 100
@@ -364,9 +364,9 @@ class FirstCandleRetestBacktest:
 
         return trade
 
-    def exit_trade(self, trade: Trade, exit_price: float, reason: str) -> bool:
+    def exit_trade(self, trade: Trade, exit_price: float, reason: str, exit_time: datetime = None) -> bool:
         """Exit a trade"""
-        trade.exit_time = datetime.now()
+        trade.exit_time = exit_time if exit_time is not None else datetime.now()
         trade.exit_price = exit_price
         trade.exit_reason = reason
         trade.status = 'CLOSED'
@@ -512,21 +512,21 @@ class FirstCandleRetestBacktest:
 
                     # Check force exit time
                     if current_time.time() >= TradingConfig.FORCE_EXIT_TIME:
-                        self.exit_trade(trade, current_price, 'TIME_EXIT')
+                        self.exit_trade(trade, current_price, 'TIME_EXIT', current_time)
                         del self.active_trades[symbol]
                         break
 
                     # Check stop loss
                     if self.check_stop_loss(current_low, trade):
                         exit_price = min(current_price, trade.stop_loss)
-                        self.exit_trade(trade, exit_price, 'STOP_LOSS')
+                        self.exit_trade(trade, exit_price, 'STOP_LOSS', current_time)
                         del self.active_trades[symbol]
                         break
 
                     # Check target
                     if self.exit_strategy.use_rr and self.check_target(current_high, trade):
                         exit_price = max(current_price, trade.target_price)
-                        self.exit_trade(trade, exit_price, 'TARGET')
+                        self.exit_trade(trade, exit_price, 'TARGET', current_time)
                         del self.active_trades[symbol]
                         break
 
@@ -537,8 +537,10 @@ class FirstCandleRetestBacktest:
 
                 # EOD exit if still open
                 if symbol in self.active_trades:
-                    eod_close = df.iloc[-1]['close']
-                    self.exit_trade(trade, eod_close, 'EOD_EXIT')
+                    eod_candle = df.iloc[-1]
+                    eod_close = eod_candle['close']
+                    eod_time = eod_candle['datetime']
+                    self.exit_trade(trade, eod_close, 'EOD_EXIT', eod_time)
                     del self.active_trades[symbol]
 
             except Exception as e:
