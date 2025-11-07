@@ -18,6 +18,10 @@ from datetime import datetime, time, timedelta
 from typing import Optional, Dict, List, Tuple
 import pandas as pd
 from collections import defaultdict
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Import from existing modules
 from config import TradingConfig, ExitStrategyConfig
