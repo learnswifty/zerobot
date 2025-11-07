@@ -25,7 +25,8 @@ class CommandHandler:
             'on_resume_stock': None,
             'on_status': None,
             'on_shutdown': None,
-            'on_emergency_stop': None
+            'on_emergency_stop': None,
+            'on_exit_position': None
         }
 
     def register_callback(self, event: str, callback: Callable):
@@ -48,9 +49,10 @@ class CommandHandler:
         print(f"  {Colors.BOLD}resume all{Colors.ENDC}        - Resume monitoring all stocks")
         print(f"  {Colors.BOLD}list{Colors.ENDC}              - Show stopped stocks")
         print(f"  {Colors.BOLD}status{Colors.ENDC}            - Show bot status")
+        print(f"  {Colors.BOLD}exit <SYMBOL>{Colors.ENDC}     - Exit position for specific stock (e.g., exit LTF)")
+        print(f"  {Colors.BOLD}exit{Colors.ENDC}              - Shutdown bot gracefully")
         print(f"  {Colors.BOLD}emergency{Colors.ENDC}         - EMERGENCY STOP: Exit all positions & halt trading")
         print(f"  {Colors.BOLD}help{Colors.ENDC}              - Show this help")
-        print(f"  {Colors.BOLD}exit{Colors.ENDC}              - Shutdown bot gracefully")
         print(f"{Colors.OKCYAN}{'=' * 80}{Colors.ENDC}\n")
 
     def _listen_for_commands(self):
@@ -126,7 +128,13 @@ class CommandHandler:
 
         # EXIT command
         elif cmd in ['exit', 'quit', 'shutdown']:
-            self._shutdown()
+            # Check if stock symbol provided for position exit
+            if len(parts) >= 2:
+                symbol = parts[1].upper()
+                self._exit_position(symbol)
+            else:
+                # No symbol - shutdown bot
+                self._shutdown()
 
         else:
             print(f"{Colors.FAIL}Unknown command: {cmd}{Colors.ENDC}")
@@ -208,9 +216,11 @@ class CommandHandler:
         print(f"  {Colors.BOLD}resume all{Colors.ENDC}        - Resume monitoring all stocks")
         print(f"  {Colors.BOLD}list{Colors.ENDC}              - Show stopped stocks")
         print(f"  {Colors.BOLD}status{Colors.ENDC}            - Show current bot status")
+        print(f"  {Colors.BOLD}exit <SYMBOL>{Colors.ENDC}     - Exit position for a specific stock")
+        print(f"                      Example: exit LTF")
+        print(f"  {Colors.BOLD}exit{Colors.ENDC}              - Shutdown bot gracefully")
         print(f"  {Colors.BOLD}emergency{Colors.ENDC}         - EMERGENCY STOP: Exit all positions & halt trading")
         print(f"  {Colors.BOLD}help{Colors.ENDC}              - Show this help message")
-        print(f"  {Colors.BOLD}exit{Colors.ENDC}              - Shutdown bot gracefully")
         print()
 
     def _emergency_stop(self):
@@ -224,6 +234,14 @@ class CommandHandler:
 
         if self.callbacks['on_emergency_stop']:
             self.callbacks['on_emergency_stop']()
+
+    def _exit_position(self, symbol: str):
+        """Exit position for a specific stock"""
+        print(f"\n{Colors.WARNING}⚠ Exiting position for {symbol}...{Colors.ENDC}")
+        self.logger.info(f"Exit position command for {symbol}")
+
+        if self.callbacks['on_exit_position']:
+            self.callbacks['on_exit_position'](symbol)
 
     def _shutdown(self):
         """Shutdown the bot"""
