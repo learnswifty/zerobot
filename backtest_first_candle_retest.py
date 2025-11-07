@@ -176,72 +176,162 @@ class FirstCandleRetestBacktest:
         # Calculate average volume (if enough data)
         avg_volume = df['volume'].mean() if len(df) > 5 else candle1['volume']
 
+        # Helper function to get candle color and body
+        def get_candle_info(candle):
+            o, c, h, l = candle['open'], candle['close'], candle['high'], candle['low']
+            color = "🟢 GREEN" if c > o else ("🔴 RED" if c < o else "⚪ DOJI")
+            body_pct = ((c - o) / o) * 100 if o != 0 else 0
+            body_size = abs(c - o)
+            upper_wick = h - max(o, c)
+            lower_wick = min(o, c) - l
+            return {
+                'color': color,
+                'open': o,
+                'high': h,
+                'low': l,
+                'close': c,
+                'body_pct': body_pct,
+                'body_size': body_size,
+                'upper_wick': upper_wick,
+                'lower_wick': lower_wick,
+                'volume': candle['volume']
+            }
+
+        c1 = get_candle_info(candle1)
+        c2 = get_candle_info(candle2)
+        c3 = get_candle_info(candle3)
+
+        # Print detailed candle information
+        print_info("\n📊 First 3 Candles Analysis:")
+        print_info(f"   Average Volume: {avg_volume:,.0f}")
+
+        print_info(f"\n   Candle 1 ({candle1['datetime'].strftime('%H:%M')}) - {c1['color']}")
+        print_info(f"      Open:  ₹{c1['open']:.2f}")
+        print_info(f"      High:  ₹{c1['high']:.2f}")
+        print_info(f"      Low:   ₹{c1['low']:.2f}")
+        print_info(f"      Close: ₹{c1['close']:.2f}")
+        print_info(f"      Body:  {c1['body_pct']:+.2f}% (₹{c1['body_size']:.2f})")
+        print_info(f"      Wicks: Upper ₹{c1['upper_wick']:.2f} | Lower ₹{c1['lower_wick']:.2f}")
+        print_info(f"      Volume: {c1['volume']:,.0f} ({(c1['volume']/avg_volume*100):.0f}% of avg)")
+
+        print_info(f"\n   Candle 2 ({candle2['datetime'].strftime('%H:%M')}) - {c2['color']}")
+        print_info(f"      Open:  ₹{c2['open']:.2f}")
+        print_info(f"      High:  ₹{c2['high']:.2f}")
+        print_info(f"      Low:   ₹{c2['low']:.2f}")
+        print_info(f"      Close: ₹{c2['close']:.2f}")
+        print_info(f"      Body:  {c2['body_pct']:+.2f}% (₹{c2['body_size']:.2f})")
+        print_info(f"      Wicks: Upper ₹{c2['upper_wick']:.2f} | Lower ₹{c2['lower_wick']:.2f}")
+        print_info(f"      Volume: {c2['volume']:,.0f} ({(c2['volume']/avg_volume*100):.0f}% of avg)")
+
+        print_info(f"\n   Candle 3 ({candle3['datetime'].strftime('%H:%M')}) - {c3['color']}")
+        print_info(f"      Open:  ₹{c3['open']:.2f}")
+        print_info(f"      High:  ₹{c3['high']:.2f}")
+        print_info(f"      Low:   ₹{c3['low']:.2f}")
+        print_info(f"      Close: ₹{c3['close']:.2f}")
+        print_info(f"      Body:  {c3['body_pct']:+.2f}% (₹{c3['body_size']:.2f})")
+        print_info(f"      Wicks: Upper ₹{c3['upper_wick']:.2f} | Lower ₹{c3['lower_wick']:.2f}")
+        print_info(f"      Volume: {c3['volume']:,.0f} ({(c3['volume']/avg_volume*100):.0f}% of avg)")
+
+        print_info(f"\n🔍 Pattern Validation:")
+
         # === STEP 1: Validate First Candle ===
-        first_open = candle1['open']
-        first_close = candle1['close']
-        first_high = candle1['high']
-        first_low = candle1['low']
-        first_volume = candle1['volume']
+        first_open = c1['open']
+        first_close = c1['close']
+        first_high = c1['high']
+        first_low = c1['low']
+        first_volume = c1['volume']
 
         # Must be green (bullish)
         if first_close <= first_open:
+            print_warning(f"   ❌ First candle must be GREEN (currently {c1['color']})")
             return None
+        print_success(f"   ✓ First candle is GREEN")
 
         # Calculate body percentage
-        body_percent = ((first_close - first_open) / first_open) * 100
+        body_percent = c1['body_pct']
 
         # Body must be within range
-        if body_percent < self.MIN_FIRST_CANDLE_BODY or body_percent > self.MAX_FIRST_CANDLE_BODY:
+        if body_percent < self.MIN_FIRST_CANDLE_BODY:
+            print_warning(f"   ❌ First candle body {body_percent:.2f}% < {self.MIN_FIRST_CANDLE_BODY}% (too weak)")
             return None
+        if body_percent > self.MAX_FIRST_CANDLE_BODY:
+            print_warning(f"   ❌ First candle body {body_percent:.2f}% > {self.MAX_FIRST_CANDLE_BODY}% (too strong/gap)")
+            return None
+        print_success(f"   ✓ First candle body {body_percent:.2f}% is within range ({self.MIN_FIRST_CANDLE_BODY}%-{self.MAX_FIRST_CANDLE_BODY}%)")
 
         # Should close near high (bullish strength)
-        upper_wick = first_high - first_close
-        body_size = first_close - first_open
-        if body_size > 0 and (upper_wick / body_size) > 0.5:  # Upper wick < 50% of body
+        upper_wick = c1['upper_wick']
+        body_size = c1['body_size']
+        wick_ratio = (upper_wick / body_size) if body_size > 0 else 0
+        if body_size > 0 and wick_ratio > 0.5:
+            print_warning(f"   ❌ Upper wick too large ({wick_ratio*100:.0f}% of body) - should close near high")
             return None
+        print_success(f"   ✓ First candle closes near high (upper wick {wick_ratio*100:.0f}% of body)")
 
         # Volume should be decent
-        if first_volume < avg_volume * (self.MIN_VOLUME_RATIO - 0.2):
+        volume_ratio = first_volume / avg_volume if avg_volume > 0 else 1
+        min_volume_required = self.MIN_VOLUME_RATIO - 0.2
+        if volume_ratio < min_volume_required:
+            print_warning(f"   ❌ Volume too low ({volume_ratio:.1f}x avg, need {min_volume_required:.1f}x)")
             return None
+        print_success(f"   ✓ Volume acceptable ({volume_ratio:.1f}x average)")
 
         # === STEP 2: Validate Second Candle (Retest) ===
-        second_open = candle2['open']
-        second_close = candle2['close']
-        second_high = candle2['high']
-        second_low = candle2['low']
+        second_open = c2['open']
+        second_close = c2['close']
+        second_high = c2['high']
+        second_low = c2['low']
 
         # Should retest (touch or go below) first candle's low
         retest_threshold = first_low * (1 - self.RETEST_TOLERANCE / 100)
+        retest_distance = ((first_low - second_low) / first_low) * 100
 
         # Valid retest: low should be near or below first candle's low
         if second_low > first_low:
             # Even if not below, should at least test the low closely
             if second_low > first_low * 1.002:  # Within 0.2% of first low
+                print_warning(f"   ❌ Second candle low (₹{second_low:.2f}) doesn't retest first candle low (₹{first_low:.2f})")
+                print_warning(f"      Distance: {((second_low - first_low) / first_low * 100):.2f}% above (need < 0.2%)")
                 return None
+            print_success(f"   ✓ Second candle retests first low (within 0.2%)")
+        else:
+            print_success(f"   ✓ Second candle breaks below first low by {abs(retest_distance):.2f}%")
 
         # Should not close way below (would invalidate the setup)
         if second_close < retest_threshold:
+            print_warning(f"   ❌ Second candle closes too far below (₹{second_close:.2f} < ₹{retest_threshold:.2f})")
+            print_warning(f"      Tolerance: {self.RETEST_TOLERANCE}% below first low")
             return None
+        print_success(f"   ✓ Second candle doesn't close too far below")
 
         # === STEP 3: Validate Third Candle (Confirmation) ===
-        third_open = candle3['open']
-        third_close = candle3['close']
-        third_high = candle3['high']
-        third_low = candle3['low']
-        third_volume = candle3['volume']
+        third_open = c3['open']
+        third_close = c3['close']
+        third_high = c3['high']
+        third_low = c3['low']
+        third_volume = c3['volume']
 
         # Must break above first candle's high
         if third_high <= first_high:
+            breakout_gap = ((first_high - third_high) / first_high) * 100
+            print_warning(f"   ❌ Third candle high (₹{third_high:.2f}) doesn't break first candle high (₹{first_high:.2f})")
+            print_warning(f"      Gap: {breakout_gap:.2f}% below breakout level")
             return None
+        breakout_percent = ((third_high - first_high) / first_high) * 100
+        print_success(f"   ✓ Third candle breaks first high by {breakout_percent:.2f}%")
 
         # Preferably close above first candle high (strong confirmation)
         # But we can enter on breakout even if close is slightly below
-        if third_close < first_high * 0.998:  # Allow 0.2% tolerance
+        close_threshold = first_high * 0.998
+        if third_close < close_threshold:
+            close_gap = ((first_high - third_close) / first_high) * 100
+            print_warning(f"   ❌ Third candle closes too far below breakout (₹{third_close:.2f} < ₹{close_threshold:.2f})")
+            print_warning(f"      Gap: {close_gap:.2f}% (need to close within 0.2% of first high)")
             return None
-
-        # Volume should increase (follow-through buying)
-        if third_volume < second_low:  # At least as much as previous candle
-            pass  # Don't strictly require, but it's a good sign
+        if third_close >= first_high:
+            print_success(f"   ✓ Third candle closes above first high (strong confirmation)")
+        else:
+            print_success(f"   ✓ Third candle closes near first high (acceptable)")
 
         # === PATTERN CONFIRMED ===
         entry_price = first_high * 1.001  # Slightly above first candle high
@@ -252,9 +342,14 @@ class FirstCandleRetestBacktest:
 
         # Validate SL is reasonable
         if sl_percent < TradingConfig.MIN_STOP_LOSS_PERCENT:
+            print_warning(f"   ❌ Stop loss too tight ({sl_percent:.2f}% < {TradingConfig.MIN_STOP_LOSS_PERCENT}%)")
             return None
         if sl_percent > TradingConfig.MAX_STOP_LOSS_PERCENT:
+            print_warning(f"   ❌ Stop loss too wide ({sl_percent:.2f}% > {TradingConfig.MAX_STOP_LOSS_PERCENT}%)")
             return None
+        print_success(f"   ✓ Stop loss within acceptable range ({sl_percent:.2f}%)")
+
+        print_success(f"\n✅ PATTERN CONFIRMED - All criteria met!")
 
         return {
             'first_candle': {
