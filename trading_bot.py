@@ -462,21 +462,28 @@ class TradingBot:
                 self.logger.warning(f"Attempted to add {symbol} but it's already monitored")
                 return
 
-            # Add to monitored stocks
+            # CRITICAL: Ask if it's a Top Gainer BEFORE adding to monitored_stocks
+            # to prevent race condition where trading loop checks the stock before
+            # Top Gainer status is set
+            print(f"\n{Colors.BOLD}Is {symbol} a Top Gainer stock? (y/n):{Colors.ENDC} ", end='')
+            is_top_gainer = False
+            try:
+                response = input().strip().lower()
+                if response in ['y', 'yes']:
+                    is_top_gainer = True
+                    self.top_gainers.add(symbol)
+                    self.logger.info(f"{symbol} marked as Top Gainer (LONG only)")
+            except:
+                pass
+
+            # Now add to monitored stocks (after Top Gainer status is determined)
             self.monitored_stocks.append(symbol)
             self.logger.info(f"Added {symbol} to monitored stocks")
 
-            # Ask if it's a Top Gainer
-            print(f"\n{Colors.BOLD}Is {symbol} a Top Gainer stock? (y/n):{Colors.ENDC} ", end='')
-            try:
-                is_top_gainer = input().strip().lower()
-                if is_top_gainer in ['y', 'yes']:
-                    self.top_gainers.add(symbol)
-                    print(f"{Colors.OKGREEN}✓ {symbol} added as Top Gainer (LONG only){Colors.ENDC}")
-                    self.logger.info(f"{symbol} marked as Top Gainer")
-                else:
-                    print(f"{Colors.OKGREEN}✓ {symbol} added as regular stock (LONG & SHORT){Colors.ENDC}")
-            except:
+            # Show confirmation
+            if is_top_gainer:
+                print(f"{Colors.OKGREEN}✓ {symbol} added as Top Gainer (LONG only){Colors.ENDC}")
+            else:
                 print(f"{Colors.OKGREEN}✓ {symbol} added as regular stock (LONG & SHORT){Colors.ENDC}")
 
             print(f"{Colors.OKGREEN}✓ Now monitoring {len(self.monitored_stocks)} stocks{Colors.ENDC}\n")
