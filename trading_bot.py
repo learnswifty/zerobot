@@ -453,6 +453,32 @@ class TradingBot:
 
     def _setup_command_callbacks(self):
         """Setup command handler callbacks"""
+        def handle_add_stock(symbol: str):
+            """Add a new stock to monitor"""
+            if symbol in self.monitored_stocks:
+                print(f"{Colors.WARNING}⚠ {symbol} is already being monitored{Colors.ENDC}")
+                self.logger.warning(f"Attempted to add {symbol} but it's already monitored")
+                return
+
+            # Add to monitored stocks
+            self.monitored_stocks.append(symbol)
+            self.logger.info(f"Added {symbol} to monitored stocks")
+
+            # Ask if it's a Top Gainer
+            print(f"\n{Colors.BOLD}Is {symbol} a Top Gainer stock? (y/n):{Colors.ENDC} ", end='')
+            try:
+                is_top_gainer = input().strip().lower()
+                if is_top_gainer in ['y', 'yes']:
+                    self.top_gainers.add(symbol)
+                    print(f"{Colors.OKGREEN}✓ {symbol} added as Top Gainer (LONG only){Colors.ENDC}")
+                    self.logger.info(f"{symbol} marked as Top Gainer")
+                else:
+                    print(f"{Colors.OKGREEN}✓ {symbol} added as regular stock (LONG & SHORT){Colors.ENDC}")
+            except:
+                print(f"{Colors.OKGREEN}✓ {symbol} added as regular stock (LONG & SHORT){Colors.ENDC}")
+
+            print(f"{Colors.OKGREEN}✓ Now monitoring {len(self.monitored_stocks)} stocks{Colors.ENDC}\n")
+
         def handle_stop_stock(symbol: str):
             if symbol == 'ALL':
                 # Stop all monitored stocks
@@ -509,11 +535,40 @@ class TradingBot:
             print(f"\n{Colors.FAIL}🚨 All positions closed. Trading halted.{Colors.ENDC}")
             print(f"{Colors.WARNING}Bot will shutdown in a moment...{Colors.ENDC}\n")
 
+        def handle_exit_position(symbol: str):
+            """Exit position for a specific stock"""
+            if symbol not in self.active_trades:
+                print(f"{Colors.WARNING}⚠ No active position found for {symbol}{Colors.ENDC}")
+                self.logger.warning(f"Exit command for {symbol} - no active position")
+                return
+
+            trade = self.active_trades[symbol]
+            try:
+                # Get current price
+                if self.rate_limiter:
+                    self.rate_limiter.wait_if_needed()
+                quote = self.kite.quote(f"{TradingConfig.DEFAULT_EXCHANGE}:{symbol}")
+                ltp = quote[f"{TradingConfig.DEFAULT_EXCHANGE}:{symbol}"]['last_price']
+
+                # Exit the position
+                self.logger.info(f"Exiting position for {symbol} via command @ ₹{ltp:.2f}")
+                self.exit_trade(trade, ltp, "EXIT_COMMAND")
+
+                print(f"{Colors.OKGREEN}✓ Position closed for {symbol}{Colors.ENDC}")
+                print(f"  Exit Price: ₹{ltp:.2f}")
+                print(f"  P&L: ₹{trade.pnl:.2f} ({trade.pnl_percent:.2f}%)\n")
+
+            except Exception as e:
+                print(f"{Colors.FAIL}✗ Failed to exit position for {symbol}: {str(e)}{Colors.ENDC}")
+                self.logger.error(f"Failed to exit position for {symbol} via command: {str(e)}")
+
+        self.command_handler.register_callback('on_add_stock', handle_add_stock)
         self.command_handler.register_callback('on_stop_stock', handle_stop_stock)
         self.command_handler.register_callback('on_resume_stock', handle_resume_stock)
         self.command_handler.register_callback('on_status', handle_status)
         self.command_handler.register_callback('on_shutdown', handle_shutdown)
         self.command_handler.register_callback('on_emergency_stop', handle_emergency_stop)
+        self.command_handler.register_callback('on_exit_position', handle_exit_position)
 
     def is_market_open(self) -> bool:
         """Check if market is currently open"""
@@ -1596,7 +1651,7 @@ class TradingBot:
 
                 # Scan for new opportunities (if allowed)
                 if self.can_take_new_position() and current_time < TradingConfig.TRADING_END_TIME:
-                    for symbol in symbols:
+                    for symbol in list(self.monitored_stocks):  # Use list() to avoid modification during iteration
                         if not self.can_enter_stock(symbol):
                             continue
 
