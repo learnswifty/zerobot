@@ -425,11 +425,24 @@ class TradingBot:
         self.logger.info(f"⚙️  CONFIG: MAX_ENTRIES_PER_STOCK = {TradingConfig.MAX_ENTRIES_PER_STOCK} | MAX_OPEN_POSITIONS = {TradingConfig.MAX_OPEN_POSITIONS}")
         print_info(f"⚙️  Stop Loss Limits: {TradingConfig.MIN_STOP_LOSS_PERCENT}% - {TradingConfig.MAX_STOP_LOSS_PERCENT}%")
 
-        # Verify config is not using old defaults
+        # CRITICAL: Refuse to run with incorrect config (prevents stale Python cache issues)
         if TradingConfig.MAX_STOP_LOSS_PERCENT < 5.0:
-            print_warning(f"⚠️  WARNING: MAX_STOP_LOSS_PERCENT is {TradingConfig.MAX_STOP_LOSS_PERCENT}% (expected 7.0%)")
-            print_warning(f"⚠️  You may be running an old Python process with cached imports!")
-            print_warning(f"⚠️  Solution: Kill this process and restart the bot in a fresh terminal")
+            print_error(f"\n{'='*80}")
+            print_error(f"❌ CRITICAL ERROR: Invalid Configuration Detected!")
+            print_error(f"❌ MAX_STOP_LOSS_PERCENT = {TradingConfig.MAX_STOP_LOSS_PERCENT}% (expected 7.0%)")
+            print_error(f"{'='*80}")
+            print_error(f"\n🔍 Root Cause: You are running with STALE Python bytecode cache")
+            print_error(f"\n✅ Solution:")
+            print_error(f"   1. Kill this process (CTRL+C)")
+            print_error(f"   2. Run: ./start_bot.sh")
+            print_error(f"   OR manually:")
+            print_error(f"   1. rm -rf __pycache__")
+            print_error(f"   2. pkill -f trading_bot.py")
+            print_error(f"   3. python3 verify_config.py (verify shows 7.0%)")
+            print_error(f"   4. python3 trading_bot.py")
+            print_error(f"\n{'='*80}\n")
+            self.logger.critical(f"Bot startup ABORTED due to invalid config: MAX_STOP_LOSS_PERCENT={TradingConfig.MAX_STOP_LOSS_PERCENT}%")
+            sys.exit(1)
 
     def _init_kite_connect(self) -> KiteConnect:
         """Initialize and authenticate Kite Connect"""
