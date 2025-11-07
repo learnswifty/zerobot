@@ -406,6 +406,7 @@ class TradingBot:
         self.stock_entry_count = defaultdict(int)
         self.failed_entry_attempts = defaultdict(int)  # Track consecutive failed entry attempts
         self.last_entry_attempt_time = {}  # Track last attempt time for exponential backoff
+        self.max_entries_logged = set()  # Track stocks for which we've logged max entries message
         self.is_running = False
 
         # Setup signal handlers
@@ -652,12 +653,17 @@ class TradingBot:
                 backoff_seconds = min(30 * (2 ** (self.failed_entry_attempts[symbol] - 1)), 300)
                 time_since_last = time.time() - self.last_entry_attempt_time[symbol]
                 if time_since_last < backoff_seconds:
+                    remaining = backoff_seconds - time_since_last
+                    self.logger.debug(f"{symbol} in backoff: {remaining:.0f}s remaining (attempt {self.failed_entry_attempts[symbol]})")
                     return False  # Still in backoff period
 
         # Check per-stock entry limit
         entries_today = self.db.get_trade_count_for_stock(symbol, self.today_date)
         if entries_today >= TradingConfig.MAX_ENTRIES_PER_STOCK:
-            self.logger.info(f"{symbol} reached max entries for today: {entries_today}")
+            # Only log once per stock to avoid spam
+            if symbol not in self.max_entries_logged:
+                self.logger.info(f"{symbol} reached max entries for today: {entries_today}")
+                self.max_entries_logged.add(symbol)
             return False
 
         return True
@@ -1132,7 +1138,9 @@ class TradingBot:
         # Log trade exit (using net P&L)
         self.logger.trade_exit(trade.symbol, trade.direction, trade.quantity,
                               trade.entry_price, trade.exit_price,
-                              net_pnl, reason)
+                              net_pnl, reason,
+                              entry_time=trade.entry_time,
+                              exit_time=trade.exit_time)
 
         return True
 

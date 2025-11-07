@@ -116,25 +116,60 @@ class TradingLogger:
         """Log critical message"""
         self.logger.critical(message, exc_info=exc_info, **kwargs)
 
-    def trade_entry(self, symbol: str, direction: str, quantity: int, 
+    def trade_entry(self, symbol: str, direction: str, quantity: int,
                     price: float, stop_loss: float, target: float = None):
         """Log trade entry"""
+        # Calculate SL percentage
+        if direction == 'LONG':
+            sl_percent = ((price - stop_loss) / price) * 100
+        else:  # SHORT
+            sl_percent = ((stop_loss - price) / price) * 100
+
+        # Calculate position size
+        position_size = price * quantity
+
         msg = (f"🔵 ENTRY | {symbol} | {direction} | "
                f"Qty: {quantity} | Entry: ₹{price:.2f} | "
-               f"SL: ₹{stop_loss:.2f}")
+               f"SL: ₹{stop_loss:.2f} ({sl_percent:.2f}%) | "
+               f"Position: ₹{position_size:,.0f}")
+
         if target:
-            msg += f" | Target: ₹{target:.2f}"
+            # Calculate RR ratio
+            if direction == 'LONG':
+                risk = price - stop_loss
+                reward = target - price
+            else:  # SHORT
+                risk = stop_loss - price
+                reward = price - target
+            rr_ratio = reward / risk if risk > 0 else 0
+            msg += f" | Target: ₹{target:.2f} (RR {rr_ratio:.1f}:1)"
+
         self.logger.info(msg)
 
     def trade_exit(self, symbol: str, direction: str, quantity: int,
-                   entry_price: float, exit_price: float, 
-                   pnl: float, reason: str):
+                   entry_price: float, exit_price: float,
+                   pnl: float, reason: str, entry_time=None, exit_time=None):
         """Log trade exit"""
         pnl_symbol = "🟢" if pnl > 0 else "🔴" if pnl < 0 else "⚪"
+
+        # Calculate P&L percentage
+        pnl_percent = (pnl / (entry_price * quantity)) * 100 if quantity > 0 else 0
+
         msg = (f"{pnl_symbol} EXIT | {symbol} | {direction} | "
                f"Qty: {quantity} | Entry: ₹{entry_price:.2f} | "
-               f"Exit: ₹{exit_price:.2f} | P&L: ₹{pnl:.2f} | "
-               f"Reason: {reason}")
+               f"Exit: ₹{exit_price:.2f} | P&L: ₹{pnl:.2f} ({pnl_percent:+.2f}%)")
+
+        # Add trade duration if available
+        if entry_time and exit_time:
+            duration = exit_time - entry_time
+            hours = duration.total_seconds() / 3600
+            minutes = (duration.total_seconds() % 3600) / 60
+            if hours >= 1:
+                msg += f" | Duration: {int(hours)}h {int(minutes)}m"
+            else:
+                msg += f" | Duration: {int(minutes)}m"
+
+        msg += f" | Reason: {reason}"
 
         if pnl > 0:
             self.logger.info(msg)
